@@ -1,6 +1,6 @@
 module github.com/picosh/pgit
 
-go 1.24
+go 1.24.6
 
 require (
 	github.com/alecthomas/chroma/v2 v2.20.0
@@ -9,6 +9,7 @@ require (
 	github.com/h2non/filetype v1.1.3
 	github.com/urfave/cli-altsrc/v3 v3.0.1
 	github.com/urfave/cli/v3 v3.3.8
+	github.com/xplshn/tracerr2 v0.0.0-20250811083209-4bbf30a64c99
 )
 
 require (
