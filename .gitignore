@@ -2,3 +2,4 @@ pgit
 *.swp
 *.log
 public/
+.*

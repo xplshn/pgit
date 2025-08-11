@@ -1,0 +1,11 @@
+out: ./public
+repo: /home/anto/Documents/TrulyMine/gbc
+theme: gruvbox-light
+label: gbc
+cloneUrl: https://github.com/xplshn/gbc.git
+homeUrl: https://gbc.xplshn.com.ar
+desc: GBC - Go B Compiler
+rootRelative: /
+maxCommits: 100
+hideTreeLastCommit: false
+readme: README.md

@@ -47,6 +47,14 @@ body {
   margin-bottom: 0;
 }
 
+.language {
+  float: right;
+  font-style: italic;
+  color: var(--grey-light);
+  margin-top: -1.5rem;
+  margin-bottom: 1rem;
+}
+
 @media only screen and (max-width: 900px) {
   .tree-commit {
     display: none;

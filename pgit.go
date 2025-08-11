@@ -1,10 +1,11 @@
+//usr/bin/env go run "$0" "$@"; exit "$?"
 package main
 
 import (
 	"bytes"
+	"context"
 	"embed"
-	_ "embed"
-	"flag"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"log/slog"
@@ -16,13 +17,18 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+	"net/http"
 
 	"github.com/alecthomas/chroma/v2"
-	formatterHtml "github.com/alecthomas/chroma/v2/formatters/html"
-	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/alecthomas/chroma/v2/styles"
+	"github.com/alecthomas/chroma/v2/formatters/html"
+	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/dustin/go-humanize"
-	git "github.com/gogs/git-module"
+	"github.com/gogs/git-module"
+	"github.com/urfave/cli/v3"
+	"github.com/urfave/cli-altsrc/v3"
+	"github.com/urfave/cli-altsrc/v3/yaml"
+	"github.com/h2non/filetype"
 )
 
 //go:embed html/*.tmpl
@@ -31,33 +37,37 @@ var embedFS embed.FS
 //go:embed static/*
 var staticFS embed.FS
 
-type Config struct {
+type RepoConfig struct {
 	// required params
-	Outdir string
+	Outdir string `yaml:"out"`
 	// abs path to git repo
-	RepoPath string
+	RepoPath string `yaml:"repo"`
 
 	// optional params
-	// generate logs anad tree based on the git revisions provided
-	Revs []string
+	// generate logs and tree based on the git revisions provided
+	Revs []string `yaml:"revs"`
 	// description of repo used in the header of site
-	Desc string
+	Desc string `yaml:"desc"`
 	// maximum number of commits that we will process in descending order
-	MaxCommits int
+	MaxCommits int `yaml:"max-commits"`
 	// name of the readme file
-	Readme string
+	Readme string `yaml:"readme"`
 	// In order to get the latest commit per file we do a `git rev-list {ref} {file}`
 	// which is n+1 where n is a file in the tree.
 	// We offer a way to disable showing the latest commit in the output
 	// for those who want a faster build time
-	HideTreeLastCommit bool
+	HideTreeLastCommit bool `yaml:"hide-tree-last-commit"`
 
 	// user-defined urls
-	HomeURL  template.URL
-	CloneURL template.URL
+	HomeURL  string `yaml:"home-url"`
+	CloneURL string `yaml:"clone-url"`
 
 	// https://developer.mozilla.org/en-US/docs/Web/API/URL_API/Resolving_relative_references#root_relative
-	RootRelative string
+	RootRelative string `yaml:"root-relative"`
+
+	ThemeName string `yaml:"theme"`
+
+	Label string `yaml:"label"`
 
 	// computed
 	// cache for skipping commits, trees, etc.
@@ -70,7 +80,7 @@ type Config struct {
 	Logger *slog.Logger
 	// chroma style
 	Theme     *chroma.Style
-	Formatter *formatterHtml.Formatter
+	Formatter *html.Formatter
 }
 
 type RevInfo interface {
@@ -81,7 +91,7 @@ type RevInfo interface {
 type RevData struct {
 	id     string
 	name   string
-	Config *Config
+	Config *RepoConfig
 }
 
 func (r *RevData) ID() string {
@@ -153,9 +163,9 @@ type DiffRenderFile struct {
 }
 
 type RefInfo struct {
-	ID      string
-	Refspec string
-	URL     template.URL
+	ID      string `json:"ID"`
+	Refspec string `json:"Refspec"`
+	URL     template.URL `json:"URL"`
 }
 
 type BranchOutput struct {
@@ -171,7 +181,7 @@ type SiteURLs struct {
 }
 
 type PageData struct {
-	Repo     *Config
+	Repo     *RepoConfig
 	SiteURLs *SiteURLs
 	RevData  *RevData
 }
@@ -196,6 +206,7 @@ type FilePageData struct {
 	*PageData
 	Contents template.HTML
 	Item     *TreeItem
+	Language string
 }
 
 type CommitPageData struct {
@@ -243,7 +254,12 @@ func diffFileType(_type git.DiffFileType) string {
 }
 
 // converts contents of files in git tree to pretty formatted code.
-func (c *Config) parseText(filename string, text string) (string, error) {
+func (c *RepoConfig) parseText(filename string, text string, blob *git.Blob) (string, string, error) {
+	// Check file size
+	if blob != nil && blob.Size() > 800*1024 { // 800KB
+		return "file too large to display (>800KB)", "", nil
+	}
+
 	lexer := lexers.Match(filename)
 	if lexer == nil {
 		lexer = lexers.Analyse(text)
@@ -251,16 +267,20 @@ func (c *Config) parseText(filename string, text string) (string, error) {
 	if lexer == nil {
 		lexer = lexers.Get("plaintext")
 	}
+	lang := "Text"
+	if lexer != nil {
+		lang = lexer.Config().Name
+	}
 	iterator, err := lexer.Tokenise(nil, text)
 	if err != nil {
-		return text, err
+		return text, lang, err
 	}
 	var buf bytes.Buffer
 	err = c.Formatter.Format(&buf, c.Theme, iterator)
 	if err != nil {
-		return text, err
+		return text, lang, err
 	}
-	return buf.String(), nil
+	return buf.String(), lang, nil
 }
 
 // isText reports whether a significant prefix of s looks like correct UTF-8;
@@ -287,7 +307,21 @@ func isText(s string) bool {
 // a text file, or if a significant chunk of the specified file looks like
 // correct UTF-8; that is, if it is likely that the file contains human-
 // readable text.
-func isTextFile(text string) bool {
+func isTextFile(text string, blob *git.Blob) bool {
+	// Check file size
+	if blob != nil && blob.Size() > 800*1024 { // 800KB
+		return false
+	}
+
+	// Check if file is binary
+	ft, err := filetype.Match([]byte(text))
+	if err != nil {
+		return false
+	}
+	if !strings.HasPrefix("text", ft.MIME.Type) {
+		return false
+	}
+
 	num := math.Min(float64(len(text)), 1024)
 	return isText(text[0:int(num)])
 }
@@ -301,7 +335,7 @@ func repoName(root string) string {
 	return file
 }
 
-func readmeFile(repo *Config) string {
+func readmeFile(repo *RepoConfig) string {
 	if repo.Readme == "" {
 		return "readme.md"
 	}
@@ -309,7 +343,7 @@ func readmeFile(repo *Config) string {
 	return strings.ToLower(repo.Readme)
 }
 
-func (c *Config) writeHtml(writeData *WriteData) {
+func (c *RepoConfig) writeHtml(writeData *WriteData) {
 	ts, err := template.ParseFS(
 		embedFS,
 		writeData.Template,
@@ -333,7 +367,7 @@ func (c *Config) writeHtml(writeData *WriteData) {
 	bail(err)
 }
 
-func (c *Config) copyStatic(dir string) error {
+func (c *RepoConfig) copyStatic(dir string) error {
 	entries, err := staticFS.ReadDir(dir)
 	bail(err)
 
@@ -354,7 +388,7 @@ func (c *Config) copyStatic(dir string) error {
 	return nil
 }
 
-func (c *Config) writeRootSummary(data *PageData, readme template.HTML) {
+func (c *RepoConfig) writeRootSummary(data *PageData, readme template.HTML) {
 	c.Logger.Info("writing root html", "repoPath", c.RepoPath)
 	c.writeHtml(&WriteData{
 		Filename: "index.html",
@@ -366,7 +400,7 @@ func (c *Config) writeRootSummary(data *PageData, readme template.HTML) {
 	})
 }
 
-func (c *Config) writeTree(data *PageData, tree *TreeRoot) {
+func (c *RepoConfig) writeTree(data *PageData, tree *TreeRoot) {
 	c.Logger.Info("writing tree", "treePath", tree.Path)
 	c.writeHtml(&WriteData{
 		Filename: "index.html",
@@ -379,7 +413,7 @@ func (c *Config) writeTree(data *PageData, tree *TreeRoot) {
 	})
 }
 
-func (c *Config) writeLog(data *PageData, logs []*CommitData) {
+func (c *RepoConfig) writeLog(data *PageData, logs []*CommitData) {
 	c.Logger.Info("writing log file", "revision", data.RevData.Name())
 	c.writeHtml(&WriteData{
 		Filename: "index.html",
@@ -393,7 +427,7 @@ func (c *Config) writeLog(data *PageData, logs []*CommitData) {
 	})
 }
 
-func (c *Config) writeRefs(data *PageData, refs []*RefInfo) {
+func (c *RepoConfig) writeRefs(data *PageData, refs []*RefInfo) {
 	c.Logger.Info("writing refs", "repoPath", c.RepoPath)
 	c.writeHtml(&WriteData{
 		Filename: "refs.html",
@@ -403,29 +437,39 @@ func (c *Config) writeRefs(data *PageData, refs []*RefInfo) {
 			Refs:     refs,
 		},
 	})
+
+	// write refs.json
+	jsonData, err := json.Marshal(refs)
+	bail(err)
+	fp := filepath.Join(c.Outdir, "refs.json")
+	err = os.WriteFile(fp, jsonData, 0644)
+	bail(err)
 }
 
-func (c *Config) writeHTMLTreeFile(pageData *PageData, treeItem *TreeItem) string {
+func (c *RepoConfig) writeHTMLTreeFile(pageData *PageData, treeItem *TreeItem) string {
 	readme := ""
 	b, err := treeItem.Entry.Blob().Bytes()
 	bail(err)
 	str := string(b)
 
-	treeItem.IsTextFile = isTextFile(str)
+	treeItem.IsTextFile = isTextFile(str, treeItem.Entry.Blob())
 
-	contents := "binary file, cannot display"
+	contentsStr := "binary file, cannot display"
+	lang := ""
+	numLines := 0
 	if treeItem.IsTextFile {
-		treeItem.NumLines = len(strings.Split(str, "\n"))
-		contents, err = c.parseText(treeItem.Entry.Name(), string(b))
+		numLines = len(strings.Split(str, "\n"))
+		contentsStr, lang, err = c.parseText(treeItem.Entry.Name(), str, treeItem.Entry.Blob())
 		bail(err)
 	}
+	treeItem.NumLines = numLines
 
 	d := filepath.Dir(treeItem.Path)
 
 	nameLower := strings.ToLower(treeItem.Entry.Name())
 	summary := readmeFile(pageData.Repo)
 	if d == "." && nameLower == summary {
-		readme = contents
+		readme = contentsStr
 	}
 
 	c.writeHtml(&WriteData{
@@ -433,15 +477,16 @@ func (c *Config) writeHTMLTreeFile(pageData *PageData, treeItem *TreeItem) strin
 		Template: "html/file.page.tmpl",
 		Data: &FilePageData{
 			PageData: pageData,
-			Contents: template.HTML(contents),
+			Contents: template.HTML(contentsStr),
 			Item:     treeItem,
+			Language: lang,
 		},
 		Subdir: getFileDir(pageData.RevData, d),
 	})
 	return readme
 }
 
-func (c *Config) writeLogDiff(repo *git.Repository, pageData *PageData, commit *CommitData) {
+func (c *RepoConfig) writeLogDiff(repo *git.Repository, pageData *PageData, commit *CommitData) {
 	commitID := commit.ID.String()
 
 	c.Mutex.RLock()
@@ -451,14 +496,17 @@ func (c *Config) writeLogDiff(repo *git.Repository, pageData *PageData, commit *
 	if hasCommit {
 		c.Logger.Info("commit file already generated, skipping", "commitID", getShortID(commitID))
 		return
-	} else {
-		c.Mutex.Lock()
-		c.Cache[commitID] = true
-		c.Mutex.Unlock()
 	}
 
+	c.Mutex.Lock()
+	c.Cache[commitID] = true
+	c.Mutex.Unlock()
+
 	diff, err := repo.Diff(commitID, 0, 0, 0, git.DiffOptions{})
-	bail(err)
+	if err != nil {
+		c.Logger.Error("failed to generate diff", "commitID", getShortID(commitID), "error", err)
+		return
+	}
 
 	rnd := &DiffRender{
 		NumFiles:       diff.NumFiles(),
@@ -482,9 +530,11 @@ func (c *Config) writeLogDiff(repo *git.Repository, pageData *PageData, commit *
 				content += fmt.Sprintf("%s\n", line.Content)
 			}
 		}
-		// set filename to something our `ParseText` recognizes (e.g. `.diff`)
-		finContent, err := c.parseText("commit.diff", content)
-		bail(err)
+		finContent, _, err := c.parseText("commit.diff", content, nil)
+		if err != nil {
+			c.Logger.Error("failed to parse diff content", "commitID", getShortID(commitID), "error", err)
+			continue
+		}
 
 		fl.Content = template.HTML(finContent)
 		fls = append(fls, fl)
@@ -509,12 +559,12 @@ func (c *Config) writeLogDiff(repo *git.Repository, pageData *PageData, commit *
 	})
 }
 
-func (c *Config) getSummaryURL() template.URL {
+func (c *RepoConfig) getSummaryURL() template.URL {
 	url := c.RootRelative + "index.html"
 	return template.URL(url)
 }
 
-func (c *Config) getRefsURL() template.URL {
+func (c *RepoConfig) getRefsURL() template.URL {
 	url := c.RootRelative + "refs.html"
 	return template.URL(url)
 }
@@ -544,35 +594,35 @@ func getFileDir(info RevInfo, fname string) string {
 	return filepath.Join(getFileBaseDir(info), fname)
 }
 
-func (c *Config) getFileURL(info RevInfo, fname string) template.URL {
+func (c *RepoConfig) getFileURL(info RevInfo, fname string) template.URL {
 	return c.compileURL(getFileBaseDir(info), fname)
 }
 
-func (c *Config) compileURL(dir, fname string) template.URL {
+func (c *RepoConfig) compileURL(dir, fname string) template.URL {
 	purl := c.RootRelative + strings.TrimPrefix(dir, "/")
 	url := filepath.Join(purl, fname)
 	return template.URL(url)
 }
 
-func (c *Config) getTreeURL(info RevInfo) template.URL {
+func (c *RepoConfig) getTreeURL(info RevInfo) template.URL {
 	dir := getTreeBaseDir(info)
 	return c.compileURL(dir, "index.html")
 }
 
-func (c *Config) getLogsURL(info RevInfo) template.URL {
+func (c *RepoConfig) getLogsURL(info RevInfo) template.URL {
 	dir := getLogBaseDir(info)
 	return c.compileURL(dir, "index.html")
 }
 
-func (c *Config) getCommitURL(commitID string) template.URL {
+func (c *RepoConfig) getCommitURL(commitID string) template.URL {
 	url := fmt.Sprintf("%scommits/%s.html", c.RootRelative, commitID)
 	return template.URL(url)
 }
 
-func (c *Config) getURLs() *SiteURLs {
+func (c *RepoConfig) getURLs() *SiteURLs {
 	return &SiteURLs{
-		HomeURL:    c.HomeURL,
-		CloneURL:   c.CloneURL,
+		HomeURL:    template.URL(c.HomeURL),
+		CloneURL:   template.URL(c.CloneURL),
 		RefsURL:    c.getRefsURL(),
 		SummaryURL: c.getSummaryURL(),
 	}
@@ -582,7 +632,7 @@ func getShortID(id string) string {
 	return id[:7]
 }
 
-func (c *Config) writeRepo() *BranchOutput {
+func (c *RepoConfig) writeRepo() *BranchOutput {
 	c.Logger.Info("writing repo", "repoPath", c.RepoPath)
 	repo, err := git.Open(c.RepoPath)
 	bail(err)
@@ -716,7 +766,7 @@ type TreeWalker struct {
 	HideTreeLastCommit bool
 	PageData           *PageData
 	Repo               *git.Repository
-	Config             *Config
+	Config             *RepoConfig
 }
 
 type Breadcrumb struct {
@@ -850,15 +900,15 @@ func (tw *TreeWalker) walk(tree *git.Tree, curpath string) {
 		item := tw.NewTreeItem(entry, curpath, crumbs)
 
 		switch typ {
-		case git.ObjectTree:
-			item.IsDir = true
-			re, _ := tree.Subtree(entry.Name())
-			tw.walk(re, item.Path)
-			treeEntries = append(treeEntries, item)
-			tw.treeItem <- item
-		case git.ObjectBlob:
-			treeEntries = append(treeEntries, item)
-			tw.treeItem <- item
+	case git.ObjectTree:
+		item.IsDir = true
+		re, _ := tree.Subtree(entry.Name())
+		tw.walk(re, item.Path)
+		treeEntries = append(treeEntries, item)
+		tw.treeItem <- item
+	case git.ObjectBlob:
+		treeEntries = append(treeEntries, item)
+		tw.treeItem <- item
 		}
 	}
 
@@ -901,7 +951,7 @@ func (tw *TreeWalker) walk(tree *git.Tree, curpath string) {
 	}
 }
 
-func (c *Config) writeRevision(repo *git.Repository, pageData *PageData, refs []*RefInfo) *BranchOutput {
+func (c *RepoConfig) writeRevision(repo *git.Repository, pageData *PageData, refs []*RefInfo) *BranchOutput {
 	c.Logger.Info(
 		"compiling revision",
 		"repoName", c.RepoName,
@@ -1053,87 +1103,171 @@ func style(theme chroma.Style) string {
 }
 
 func main() {
-	var outdir = flag.String("out", "./public", "output directory")
-	var rpath = flag.String("repo", ".", "path to git repo")
-	var revsFlag = flag.String("revs", "HEAD", "list of revs to generate logs and tree (e.g. main,v1,c69f86f,HEAD)")
-	var themeFlag = flag.String("theme", "dracula", "theme to use for site")
-	var labelFlag = flag.String("label", "", "pretty name for the subdir where we create the repo, default is last folder in --repo")
-	var cloneFlag = flag.String("clone-url", "", "git clone URL for upstream")
-	var homeFlag = flag.String("home-url", "", "URL for breadcumbs to go to root page, hidden if empty")
-	var descFlag = flag.String("desc", "", "description for repo")
-	var rootRelativeFlag = flag.String("root-relative", "/", "html root relative")
-	var maxCommitsFlag = flag.Int("max-commits", 0, "maximum number of commits to generate")
-	var hideTreeLastCommitFlag = flag.Bool("hide-tree-last-commit", false, "dont calculate last commit for each file in the tree")
-
-	flag.Parse()
-
-	out, err := filepath.Abs(*outdir)
-	bail(err)
-	repoPath, err := filepath.Abs(*rpath)
-	bail(err)
-
-	theme := styles.Get(*themeFlag)
+	formatter := html.New(
+		html.WithLineNumbers(true),
+		html.WithLinkableLineNumbers(true, ""),
+		html.WithClasses(true),
+	)
 
 	logger := slog.Default()
 
-	label := repoName(repoPath)
-	if *labelFlag != "" {
-		label = *labelFlag
+	configFile := "pgit.yaml"
+
+	app := &cli.Command{
+		Name: "pgit",
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:    "out",
+				Value:   "./public",
+				Usage:   "output directory",
+				Sources: cli.NewValueSourceChain(yaml.YAML("out", altsrc.NewStringPtrSourcer(&configFile))),
+			},
+			&cli.StringFlag{
+				Name:    "repo",
+				Value:   ".",
+				Usage:   "path to git repo",
+				Sources: cli.NewValueSourceChain(yaml.YAML("repo", altsrc.NewStringPtrSourcer(&configFile))),
+			},
+			&cli.StringSliceFlag{
+				Name:    "revs",
+				Value:   []string{"HEAD"},
+				Usage:   "list of revs to generate logs and tree (e.g. main,v1,c69f86f,HEAD)",
+				Sources: cli.NewValueSourceChain(yaml.YAML("revs", altsrc.NewStringPtrSourcer(&configFile))),
+			},
+			&cli.StringFlag{
+				Name:    "theme",
+				Value:   "dracula",
+				Usage:   "theme to use for syntax highlighting",
+				Sources: cli.NewValueSourceChain(yaml.YAML("theme", altsrc.NewStringPtrSourcer(&configFile))),
+			},
+			&cli.StringFlag{
+				Name:    "label",
+				Value:   "",
+				Usage:   "pretty name for the subdir where we create the repo, default is last folder in --repo",
+				Sources: cli.NewValueSourceChain(yaml.YAML("label", altsrc.NewStringPtrSourcer(&configFile))),
+			},
+			&cli.StringFlag{
+				Name:    "clone-url",
+				Value:   "",
+				Usage:   "git clone URL for upstream",
+				Sources: cli.NewValueSourceChain(yaml.YAML("cloneUrl", altsrc.NewStringPtrSourcer(&configFile))),
+			},
+			&cli.StringFlag{
+				Name:    "home-url",
+				Value:   "",
+				Usage:   "URL for breadcrumbs to go to root page, hidden if empty",
+				Sources: cli.NewValueSourceChain(yaml.YAML("homeUrl", altsrc.NewStringPtrSourcer(&configFile))),
+			},
+			&cli.StringFlag{
+				Name:    "desc",
+				Value:   "",
+				Usage:   "description for repo",
+				Sources: cli.NewValueSourceChain(yaml.YAML("desc", altsrc.NewStringPtrSourcer(&configFile))),
+			},
+			&cli.StringFlag{
+				Name:    "root-relative",
+				Value:   "/",
+				Usage:   "html root relative",
+				Sources: cli.NewValueSourceChain(yaml.YAML("rootRelative", altsrc.NewStringPtrSourcer(&configFile))),
+			},
+			&cli.IntFlag{
+				Name:    "max-commits",
+				Value:   0,
+				Usage:   "maximum number of commits to generate",
+				Sources: cli.NewValueSourceChain(yaml.YAML("maxCommits", altsrc.NewStringPtrSourcer(&configFile))),
+			},
+			&cli.BoolFlag{
+				Name:    "hide-tree-last-commit",
+				Value:   false,
+				Usage:   "dont calculate last commit for each file in the tree",
+				Sources: cli.NewValueSourceChain(yaml.YAML("hideTreeLastCommit", altsrc.NewStringPtrSourcer(&configFile))),
+			},
+			&cli.StringFlag{
+				Name:  "config",
+				Value: "pgit.yaml",
+				Usage: "path to config file",
+			},
+		},
+
+Action: func(ctx context.Context, cmd *cli.Command) error {
+			configFile := cmd.String("config")
+			argsProvided := false
+			for _, flag := range cmd.Flags {
+				if flag.IsSet() {
+					argsProvided = true
+					break
+				}
+			}
+			if !argsProvided && !cmd.IsSet("config") {
+				_, err := os.Stat(configFile)
+				if os.IsNotExist(err) {
+					return fmt.Errorf("no parameters provided and config file %s does not exist", configFile)
+				}
+			}
+
+			config := &RepoConfig{
+				Outdir:             cmd.String("out"),
+				RepoPath:           cmd.String("repo"),
+				Revs:               cmd.StringSlice("revs"),
+				ThemeName:          cmd.String("theme"),
+				Label:              cmd.String("label"),
+				CloneURL:           cmd.String("clone-url"),
+				HomeURL:            cmd.String("home-url"),
+				Desc:               cmd.String("desc"),
+				RootRelative:       cmd.String("root-relative"),
+				MaxCommits:         int(cmd.Int("max-commits")),
+				HideTreeLastCommit: cmd.Bool("hide-tree-last-commit"),
+			}
+
+			if config.Label == "" {
+				config.Label = repoName(config.RepoPath)
+			}
+			config.RepoName = config.Label
+			if len(config.Revs) == 0 {
+				bail(fmt.Errorf("you must provide revs"))
+			}
+			config.Cache = make(map[string]bool)
+			config.Logger = logger
+			config.Theme = styles.Get(config.ThemeName)
+			if config.Theme == nil {
+				config.Theme = styles.Fallback
+			}
+			config.Formatter = formatter
+
+			config.writeRepo()
+
+			err := config.copyStatic("static")
+			bail(err)
+
+			stylesCss := style(*config.Theme)
+			err = os.WriteFile(filepath.Join(config.Outdir, "vars.css"), []byte(stylesCss), 0644)
+			bail(err)
+
+			fp := filepath.Join(config.Outdir, "syntax.css")
+			w, err := os.OpenFile(fp, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
+			bail(err)
+			err = formatter.WriteCSS(w, config.Theme)
+			bail(err)
+
+			url := filepath.Join("/", "index.html")
+			config.Logger.Info("root url", "url", url)
+
+			return nil
+		},
 	}
 
-	revs := strings.Split(*revsFlag, ",")
-	if len(revs) == 1 && revs[0] == "" {
-		revs = []string{}
-	}
-
-	formatter := formatterHtml.New(
-		formatterHtml.WithLineNumbers(true),
-		formatterHtml.WithLinkableLineNumbers(true, ""),
-		formatterHtml.WithClasses(true),
-	)
-
-	config := &Config{
-		Outdir:             out,
-		RepoPath:           repoPath,
-		RepoName:           label,
-		Cache:              make(map[string]bool),
-		Revs:               revs,
-		Theme:              theme,
-		Logger:             logger,
-		CloneURL:           template.URL(*cloneFlag),
-		HomeURL:            template.URL(*homeFlag),
-		Desc:               *descFlag,
-		MaxCommits:         *maxCommitsFlag,
-		HideTreeLastCommit: *hideTreeLastCommitFlag,
-		RootRelative:       *rootRelativeFlag,
-		Formatter:          formatter,
-	}
-	config.Logger.Info("config", "config", config)
-
-	if len(revs) == 0 {
-		bail(fmt.Errorf("you must provide --revs"))
-	}
-
-	config.writeRepo()
-	err = config.copyStatic("static")
-	bail(err)
-
-	styles := style(*theme)
-	err = os.WriteFile(filepath.Join(out, "vars.css"), []byte(styles), 0644)
-	if err != nil {
+	if err := app.Run(context.Background(), os.Args); err != nil {
 		panic(err)
 	}
 
-	fp := filepath.Join(out, "syntax.css")
-	w, err := os.OpenFile(fp, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
-	if err != nil {
-		bail(err)
+	// TODO: Use logger for http.ListenAndServe(":"+"1313", nil) as well
+	// TODO: Do not hardcode port
+	if strings.HasPrefix(os.Args[0], filepath.Join(os.TempDir(), "go-build")) {
+		if err := os.Chdir(app.String("out")); err != nil {
+			panic(fmt.Sprintf("Failed to change directory to %q: %v", app.String("out"), err))
+		}
+		http.Handle("/", http.FileServer(http.Dir(".")))
+		logger.Info("Serving %s on HTTP port: %s\n", app.String("out"), "1313")
+		http.ListenAndServe(":"+"1313", nil)
 	}
-	err = formatter.WriteCSS(w, theme)
-	if err != nil {
-		bail(err)
-	}
-
-	url := filepath.Join("/", "index.html")
-	config.Logger.Info("root url", "url", url)
 }
