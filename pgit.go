@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"embed"
@@ -9,7 +10,6 @@ import (
 	"fmt"
 	"html/template"
 	"log/slog"
-	"math"
 	"net"
 	"net/http"
 	"os"
@@ -18,7 +18,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/formatters/html"
@@ -28,9 +27,8 @@ import (
 	"github.com/gogs/git-module"
 	"github.com/h2non/filetype"
 	"github.com/urfave/cli/v3"
-	"github.com/urfave/cli-altsrc/v3"
-	"github.com/urfave/cli-altsrc/v3/yaml"
 	"github.com/xplshn/tracerr2"
+	"gopkg.in/yaml.v3"
 )
 
 //go:embed html/*.tmpl
@@ -39,25 +37,32 @@ var embedFS embed.FS
 //go:embed static/*
 var staticFS embed.FS
 
+type GitAttribute struct {
+	Pattern    string
+	Attributes map[string]string
+}
+
 type RepoConfig struct {
-	Outdir             string `yaml:"out"`
-	RepoPath           string `yaml:"repo"`
+	Outdir             string   `yaml:"out"`
+	RepoPath           string   `yaml:"repo"`
 	Revs               []string `yaml:"revs"`
-	Desc               string `yaml:"desc"`
-	MaxCommits         int `yaml:"max-commits"`
-	Readme             string `yaml:"readme"`
-	HideTreeLastCommit bool `yaml:"hide-tree-last-commit"`
-	HomeURL            string `yaml:"home-url"`
-	CloneURL           string `yaml:"clone-url"`
-	RootRelative       string `yaml:"root-relative"`
-	ThemeName          string `yaml:"theme"`
-	Label              string `yaml:"label"`
+	Desc               string   `yaml:"desc"`
+	MaxCommits         int      `yaml:"max-commits"`
+	Readme             string   `yaml:"readme"`
+	HideTreeLastCommit bool     `yaml:"hide-tree-last-commit"`
+	HomeURL            string   `yaml:"home-url"`
+	CloneURL           string   `yaml:"clone-url"`
+	RootRelative       string   `yaml:"root-relative"`
+	ThemeName          string   `yaml:"theme"`
+	Label              string   `yaml:"label"`
 	Cache              map[string]bool
 	Mutex              sync.RWMutex
 	RepoName           string
 	Logger             *slog.Logger
-	Theme              *chroma.Style
+	ChromaTheme        *chroma.Style
 	Formatter          *html.Formatter
+	GitAttributes      []GitAttribute
+	LanguageOverrides  map[string]string
 }
 
 type RevInfo interface {
@@ -165,7 +170,15 @@ type PageData struct {
 
 type SummaryPageData struct {
 	*PageData
-	Readme template.HTML
+	Readme        template.HTML
+	LanguageStats []*LanguageStat
+	TotalLanguage int64
+}
+
+type LanguageStat struct {
+	Name       string
+	Percentage float64
+	Color      string
 }
 
 type TreePageData struct {
@@ -224,65 +237,107 @@ func diffFileType(_type git.DiffFileType) string {
 	}
 }
 
+func (c *RepoConfig) getLanguageOverride(filename string) (string, string) {
+	if c.GitAttributes == nil {
+		return "", ""
+	}
+
+	for _, attr := range c.GitAttributes {
+		if matched, _ := filepath.Match(attr.Pattern, filename); matched {
+			lang, langOk := attr.Attributes["linguist-language"]
+			display, displayOk := attr.Attributes["linguist-display-name"]
+
+			if langOk {
+				if displayOk {
+					return lang, display
+				}
+				return lang, lang
+			}
+		}
+	}
+	return "", ""
+}
+
 func (c *RepoConfig) parseText(filename string, text string, blob *git.Blob) (string, string, error) {
 	if blob != nil && blob.Size() > 800*1024 {
 		return "file too large to display (>800KB)", "", nil
 	}
 
-	lexer := lexers.Match(filename)
-	if lexer == nil {
-		lexer = lexers.Analyse(text)
+	langOverride, displayOverride := c.getLanguageOverride(filename)
+
+	var lexer chroma.Lexer
+	if langOverride != "" {
+		lexer = lexers.Get(langOverride)
 	}
+
+	if lexer == nil {
+		lexer = lexers.Match(filename)
+	}
+
 	if lexer == nil {
 		lexer = lexers.Get("plaintext")
 	}
+
 	lang := "Text"
 	if lexer != nil {
-		lang = lexer.Config().Name
+		config := lexer.Config()
+		if config != nil {
+			lang = config.Name
+		}
 	}
+
+	if displayOverride != "" {
+		lang = displayOverride
+	}
+
 	iterator, err := lexer.Tokenise(nil, text)
 	if err != nil {
 		return text, lang, tracerr.Errorf("%v", err)
 	}
 	var buf bytes.Buffer
-	err = c.Formatter.Format(&buf, c.Theme, iterator)
+	err = c.Formatter.Format(&buf, c.ChromaTheme, iterator)
 	if err != nil {
 		return text, lang, tracerr.Errorf("%v", err)
 	}
 	return buf.String(), lang, nil
 }
 
-func isText(s string) bool {
-	const max = 1024
-	if len(s) > max {
-		s = s[0:max]
-	}
-	for i, c := range s {
-		if i+utf8.UTFMax > len(s) {
-			break
+func (c *RepoConfig) getLanguageForStats(filename string, data []byte) string {
+	langOverride, displayOverride := c.getLanguageOverride(filename)
+	if langOverride != "" {
+		if displayOverride != "" {
+			return displayOverride
 		}
-		if c == 0xFFFD || c < ' ' && c != '\n' && c != '\t' && c != '\f' && c != '\r' {
-			return false
+		return langOverride
+	}
+
+	lexer := lexers.Match(filename)
+	if lexer != nil {
+		config := lexer.Config()
+		if config != nil {
+			return config.Name
 		}
 	}
-	return true
+
+	if isText(data) {
+		return "Text"
+	}
+
+	return ""
+}
+
+func isText(s []byte) bool {
+	if filetype.IsMIME(s, "application/octet-stream") {
+		return false
+	}
+	return !bytes.Contains(s, []byte{0})
 }
 
 func isTextFile(text string, blob *git.Blob) bool {
 	if blob != nil && blob.Size() > 800*1024 {
 		return false
 	}
-
-	ft, err := filetype.Match([]byte(text))
-	if err != nil {
-		return false
-	}
-	if !strings.HasPrefix("text", ft.MIME.Type) {
-		return false
-	}
-
-	num := math.Min(float64(len(text)), 1024)
-	return isText(text[0:int(num)])
+	return isText([]byte(text))
 }
 
 func toPretty(b int64) string {
@@ -366,14 +421,16 @@ func (c *RepoConfig) copyStatic(dir string) error {
 	return nil
 }
 
-func (c *RepoConfig) writeRootSummary(data *PageData, readme template.HTML) {
+func (c *RepoConfig) writeRootSummary(data *PageData, readme template.HTML, langStats []*LanguageStat, totalSize int64) {
 	c.Logger.Info("writing root html", "repoPath", c.RepoPath)
 	if err := c.writeHtml(&WriteData{
 		Filename: "index.html",
 		Template: "html/summary.page.tmpl",
 		Data: &SummaryPageData{
-			PageData: data,
-			Readme:   readme,
+			PageData:      data,
+			Readme:        readme,
+			LanguageStats: langStats,
+			TotalLanguage: totalSize,
 		},
 	}); err != nil {
 		c.Logger.Error("failed to write root summary", "error", err)
@@ -436,16 +493,20 @@ func (c *RepoConfig) writeRefs(data *PageData, refs []*RefInfo) {
 	}
 }
 
-func (c *RepoConfig) writeHTMLTreeFile(pageData *PageData, treeItem *TreeItem) (string, error) {
+func (c *RepoConfig) writeHTMLTreeFile(pageData *PageData, treeItem *TreeItem) (string, string, int64, error) {
 	readme := ""
 	b, err := treeItem.Entry.Blob().Bytes()
 	if err != nil {
 		c.Logger.Error("failed to get blob bytes", "file", treeItem.Path, "error", err)
-		return "", tracerr.Errorf("%v", err)
+		return "", "", 0, tracerr.Errorf("%v", err)
 	}
 	str := string(b)
 
-	treeItem.IsTextFile = isTextFile(str, treeItem.Entry.Blob())
+	if !isText(b) {
+		treeItem.IsTextFile = false
+	} else {
+		treeItem.IsTextFile = isTextFile(str, treeItem.Entry.Blob())
+	}
 
 	contentsStr := "binary file, cannot display"
 	lang := ""
@@ -456,7 +517,7 @@ func (c *RepoConfig) writeHTMLTreeFile(pageData *PageData, treeItem *TreeItem) (
 		contentsStr, lang, parseErr = c.parseText(treeItem.Entry.Name(), str, treeItem.Entry.Blob())
 		if parseErr != nil {
 			c.Logger.Error("failed to parse text file", "file", treeItem.Entry.Name(), "error", parseErr)
-			return "", tracerr.Errorf("%v", parseErr)
+			return "", "", 0, tracerr.Errorf("%v", parseErr)
 		}
 	}
 	treeItem.NumLines = numLines
@@ -481,9 +542,9 @@ func (c *RepoConfig) writeHTMLTreeFile(pageData *PageData, treeItem *TreeItem) (
 		Subdir: getFileDir(pageData.RevData, d),
 	}); err != nil {
 		c.Logger.Error("failed to write html tree file", "file", treeItem.Entry.Name(), "error", err)
-		return "", tracerr.Errorf("%v", err)
+		return "", "", 0, tracerr.Errorf("%v", err)
 	}
-	return readme, nil
+	return readme, lang, treeItem.Entry.Size(), nil
 }
 
 func (c *RepoConfig) writeLogDiff(repo *git.Repository, pageData *PageData, commit *CommitData) {
@@ -634,12 +695,58 @@ func getShortID(id string) string {
 	return id[:7]
 }
 
+func parseGitAttributes(path string) ([]GitAttribute, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var attrs []GitAttribute
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			continue
+		}
+
+		pattern := parts[0]
+		attributes := make(map[string]string)
+		for _, attrStr := range parts[1:] {
+			if strings.Contains(attrStr, "=") {
+				kv := strings.SplitN(attrStr, "=", 2)
+				attributes[kv[0]] = kv[1]
+			} else {
+				attributes[attrStr] = "true"
+			}
+		}
+		attrs = append(attrs, GitAttribute{Pattern: pattern, Attributes: attributes})
+	}
+
+	return attrs, scanner.Err()
+}
+
 func (c *RepoConfig) writeRepo() (*BranchOutput, error) {
 	c.Logger.Info("writing repo", "repoPath", c.RepoPath)
 	repo, err := git.Open(c.RepoPath)
 	if err != nil {
 		c.Logger.Error("failed to open git repository", "path", c.RepoPath, "error", err)
 		return nil, tracerr.Errorf("%v", err)
+	}
+
+	gitAttrPath := filepath.Join(c.RepoPath, ".gitattributes")
+	if _, err := os.Stat(gitAttrPath); err == nil {
+		attrs, err := parseGitAttributes(gitAttrPath)
+		if err == nil {
+			c.GitAttributes = attrs
+		} else {
+			c.Logger.Warn("failed to parse .gitattributes file", "path", gitAttrPath, "error", err)
+		}
 	}
 
 	refs, err := repo.ShowRef(git.ShowRefOptions{Heads: true, Tags: true})
@@ -760,7 +867,9 @@ func (c *RepoConfig) writeRepo() (*BranchOutput, error) {
 		SiteURLs: c.getURLs(),
 	}
 	c.writeRefs(data, refInfoList)
-	c.writeRootSummary(data, template.HTML(mainOutput.Readme))
+
+	langStats, totalSize := calculateLanguageStats(repo, first.id, c)
+	c.writeRootSummary(data, template.HTML(mainOutput.Readme), langStats, totalSize)
 	return mainOutput, nil
 }
 
@@ -1073,7 +1182,7 @@ func (c *RepoConfig) writeRevision(repo *git.Repository, pageData *PageData, ref
 					return
 				}
 
-				readmeStr, err := c.writeHTMLTreeFile(pageData, entry)
+				readmeStr, _, _, err := c.writeHTMLTreeFile(pageData, entry)
 				if err != nil {
 					errChan <- err
 					return
@@ -1123,6 +1232,99 @@ func (c *RepoConfig) writeRevision(repo *git.Repository, pageData *PageData, ref
 	return output, nil
 }
 
+var langColors = map[string]string{
+	"Go":         "#00ADD8",
+	"C":          "#555555",
+	"C++":        "#F34B7D",
+	"Python":     "#3572A5",
+	"JavaScript": "#F1E05A",
+	"TypeScript": "#2B7489",
+	"HTML":       "#E34F26",
+	"CSS":        "#563D7C",
+	"Shell":      "#89E051",
+	"Makefile":   "#427819",
+	"Dockerfile": "#384D54",
+	"Markdown":   "#083FA1",
+	"JSON":       "#292929",
+	"YAML":       "#CB171E",
+	"B":          "#555555",
+}
+
+func getLanguageColor(lang string) string {
+	if color, ok := langColors[lang]; ok {
+		return color
+	}
+	hash := 0
+	for _, char := range lang {
+		hash = int(char) + ((hash << 5) - hash)
+	}
+	color := (hash & 0x00FFFFFF)
+	return fmt.Sprintf("#%06x", color)
+}
+
+func calculateLanguageStats(repo *git.Repository, rev string, config *RepoConfig) ([]*LanguageStat, int64) {
+	tree, err := repo.LsTree(rev)
+	if err != nil {
+		config.Logger.Error("failed to get tree for language stats", "error", err)
+		return nil, 0
+	}
+
+	langSizes := make(map[string]int64)
+	var totalSize int64
+
+	var walkTree func(*git.Tree, string)
+	walkTree = func(t *git.Tree, currentPath string) {
+		entries, err := t.Entries()
+		if err != nil {
+			config.Logger.Error("failed to get tree entries for language stats", "error", err)
+			return
+		}
+
+		for _, entry := range entries {
+			if entry.Type() == git.ObjectBlob {
+				blob := entry.Blob()
+				data, err := blob.Bytes()
+				if err != nil {
+					continue
+				}
+
+				fullPath := filepath.Join(currentPath, entry.Name())
+				lang := config.getLanguageForStats(fullPath, data)
+				if lang != "" && lang != "Text" {
+					langSizes[lang] += blob.Size()
+					totalSize += blob.Size()
+				}
+			} else if entry.Type() == git.ObjectTree {
+				subTree, err := t.Subtree(entry.Name())
+				if err == nil {
+					walkTree(subTree, filepath.Join(currentPath, entry.Name()))
+				}
+			}
+		}
+	}
+
+	walkTree(tree, "")
+
+	if totalSize == 0 {
+		return nil, 0
+	}
+
+	stats := make([]*LanguageStat, 0, len(langSizes))
+	for lang, size := range langSizes {
+		stats = append(stats, &LanguageStat{
+			Name:       lang,
+			Percentage: (float64(size) / float64(totalSize)) * 100,
+			Color:      getLanguageColor(lang),
+		})
+	}
+
+	sort.Slice(stats, func(i, j int) bool {
+		return stats[i].Percentage > stats[j].Percentage
+	})
+
+	return stats, totalSize
+}
+
 func style(theme chroma.Style) string {
 	bg := theme.Get(chroma.Background)
 	txt := theme.Get(chroma.Text)
@@ -1159,6 +1361,37 @@ func isPortAvailable(port string, logger *slog.Logger) bool {
 	return true
 }
 
+type PgitConfig struct {
+	Repos []RepoConfig `yaml:"repos"`
+}
+
+func loadConfig(path string, logger *slog.Logger) (_ *PgitConfig, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = tracerr.Errorf("recovered from panic during YAML parsing: %v", r)
+		}
+	}()
+
+	logger.Info("Attempting to use configuration file", "path", path)
+
+	if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+		return nil, tracerr.Errorf("config file %s does not exist: %w", path, statErr)
+	}
+
+	yamlFile, readErr := os.ReadFile(path)
+	if readErr != nil {
+		return nil, tracerr.Errorf("error reading YAML file: %w", readErr)
+	}
+
+	var pgitConfig PgitConfig
+	unmarshalErr := yaml.Unmarshal(yamlFile, &pgitConfig)
+	if unmarshalErr != nil {
+		return nil, tracerr.Errorf("error parsing YAML file: %w", unmarshalErr)
+	}
+
+	return &pgitConfig, nil
+}
+
 func main() {
 	formatter := html.New(
 		html.WithLineNumbers(true),
@@ -1167,153 +1400,86 @@ func main() {
 	)
 
 	logger := slog.Default()
-	configFile := "pgit.yaml"
 
 	app := &cli.Command{
 		Name: "pgit",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
-				Name:    "out",
-				Value:   "./public",
-				Usage:   "output directory",
-				Sources: cli.NewValueSourceChain(yaml.YAML("out", altsrc.NewStringPtrSourcer(&configFile))),
-			},
-			&cli.StringFlag{
-				Name:    "repo",
-				Value:   ".",
-				Usage:   "path to git repo",
-				Sources: cli.NewValueSourceChain(yaml.YAML("repo", altsrc.NewStringPtrSourcer(&configFile))),
-			},
-			&cli.StringSliceFlag{
-				Name:    "revs",
-				Value:   []string{"HEAD"},
-				Usage:   "list of revs to generate logs and tree (e.g. main,v1,c69f86f,HEAD)",
-				Sources: cli.NewValueSourceChain(yaml.YAML("revs", altsrc.NewStringPtrSourcer(&configFile))),
-			},
-			&cli.StringFlag{
-				Name:    "theme",
-				Value:   "gruvbox-light",
-				Usage:   "theme to use for syntax highlighting",
-				Sources: cli.NewValueSourceChain(yaml.YAML("theme", altsrc.NewStringPtrSourcer(&configFile))),
-			},
-			&cli.StringFlag{
-				Name:    "label",
-				Value:   "",
-				Usage:   "pretty name for the subdir where we create the repo, default is last folder in --repo",
-				Sources: cli.NewValueSourceChain(yaml.YAML("label", altsrc.NewStringPtrSourcer(&configFile))),
-			},
-			&cli.StringFlag{
-				Name:    "clone-url",
-				Value:   "",
-				Usage:   "git clone URL for upstream",
-				Sources: cli.NewValueSourceChain(yaml.YAML("cloneUrl", altsrc.NewStringPtrSourcer(&configFile))),
-			},
-			&cli.StringFlag{
-				Name:    "home-url",
-				Value:   "",
-				Usage:   "URL for breadcrumbs to go to root page, hidden if empty",
-				Sources: cli.NewValueSourceChain(yaml.YAML("homeUrl", altsrc.NewStringPtrSourcer(&configFile))),
-			},
-			&cli.StringFlag{
-				Name:    "desc",
-				Value:   "",
-				Usage:   "description for repo",
-				Sources: cli.NewValueSourceChain(yaml.YAML("desc", altsrc.NewStringPtrSourcer(&configFile))),
-			},
-			&cli.StringFlag{
-				Name:    "root-relative",
-				Value:   "/",
-				Usage:   "html root relative",
-				Sources: cli.NewValueSourceChain(yaml.YAML("rootRelative", altsrc.NewStringPtrSourcer(&configFile))),
-			},
-			&cli.IntFlag{
-				Name:    "max-commits",
-				Value:   0,
-				Usage:   "maximum number of commits to generate",
-				Sources: cli.NewValueSourceChain(yaml.YAML("maxCommits", altsrc.NewStringPtrSourcer(&configFile))),
-			},
-			&cli.BoolFlag{
-				Name:    "hide-tree-last-commit",
-				Value:   false,
-				Usage:   "dont calculate last commit for each file in the tree",
-				Sources: cli.NewValueSourceChain(yaml.YAML("hideTreeLastCommit", altsrc.NewStringPtrSourcer(&configFile))),
-			},
-			&cli.StringFlag{
 				Name:  "config",
 				Value: "pgit.yaml",
 				Usage: "path to config file",
 			},
-			&cli.StringFlag{
-				Name:  "port",
-				Value: "1313",
-				Usage: "port for the http server",
-			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			configFile := cmd.String("config")
-			if cmd.NumFlags() == 0 {
-				if _, err := os.Stat(configFile); os.IsNotExist(err) {
-					return tracerr.Errorf("no parameters provided and config file %s does not exist", configFile)
-				}
-			}
 
-			config := &RepoConfig{
-				Outdir:             cmd.String("out"),
-				RepoPath:           cmd.String("repo"),
-				Revs:               cmd.StringSlice("revs"),
-				ThemeName:          cmd.String("theme"),
-				Label:              cmd.String("label"),
-				CloneURL:           cmd.String("clone-url"),
-				HomeURL:            cmd.String("home-url"),
-				Desc:               cmd.String("desc"),
-				RootRelative:       cmd.String("root-relative"),
-				MaxCommits:         int(cmd.Int("max-commits")),
-				HideTreeLastCommit: cmd.Bool("hide-tree-last-commit"),
-			}
-
-			if config.Label == "" {
-				config.Label = repoName(config.RepoPath)
-			}
-			config.RepoName = config.Label
-			if len(config.Revs) == 0 {
-				return tracerr.New("you must provide revs")
-			}
-			config.Cache = make(map[string]bool)
-			config.Logger = logger
-			config.Theme = styles.Get(config.ThemeName)
-			if config.Theme == nil {
-				config.Theme = styles.Fallback
-			}
-			config.Formatter = formatter
-
-			if _, err := config.writeRepo(); err != nil {
-				return tracerr.Errorf("%v", err)
-			}
-
-			if err := config.copyStatic("static"); err != nil {
-				return tracerr.Errorf("%v", err)
-			}
-
-			stylesCss := style(*config.Theme)
-			if err := os.WriteFile(filepath.Join(config.Outdir, "vars.css"), []byte(stylesCss), 0644); err != nil {
-				logger.Error("failed to write vars.css", "error", err)
-				return tracerr.Errorf("%v", err)
-			}
-
-			fp := filepath.Join(config.Outdir, "syntax.css")
-			w, err := os.OpenFile(fp, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
+			pgitConfig, err := loadConfig(configFile, logger)
 			if err != nil {
-				logger.Error("failed to open syntax.css for writing", "error", err)
-				return tracerr.Errorf("%v", err)
-			}
-			defer w.Close()
-			if err = formatter.WriteCSS(w, config.Theme); err != nil {
-				logger.Error("failed to write syntax.css", "error", err)
-				return tracerr.Errorf("%v", err)
+				return err
 			}
 
-			url := filepath.Join("/", "index.html")
-			config.Logger.Info("root url", "url", url)
+			if len(pgitConfig.Repos) == 0 {
+				logger.Warn("No repositories found in the configuration file. Nothing to do.")
+				return nil
+			}
+
+			var wg sync.WaitGroup
+			for _, repoCfg := range pgitConfig.Repos {
+				wg.Add(1)
+				go func(config RepoConfig) {
+					defer wg.Done()
+					if config.Label == "" {
+						config.Label = repoName(config.RepoPath)
+					}
+					config.RepoName = config.Label
+					if len(config.Revs) == 0 {
+						logger.Error("you must provide revs for repo", "repo", config.RepoPath)
+						return
+					}
+					config.Cache = make(map[string]bool)
+					config.Logger = logger
+					config.ChromaTheme = styles.Get(config.ThemeName)
+					if config.ChromaTheme == nil {
+						config.ChromaTheme = styles.Fallback
+					}
+					config.Formatter = formatter
+
+					if _, err := config.writeRepo(); err != nil {
+						logger.Error("failed to write repo", "repo", config.RepoPath, "error", err)
+						if e, ok := err.(*tracerr.Error); ok {
+							e.Print()
+						}
+						return
+					}
+
+					if err := config.copyStatic("static"); err != nil {
+						logger.Error("failed to copy static files", "repo", config.RepoPath, "error", err)
+						return
+					}
+
+					stylesCss := style(*config.ChromaTheme)
+					if err := os.WriteFile(filepath.Join(config.Outdir, "vars.css"), []byte(stylesCss), 0644); err != nil {
+						logger.Error("failed to write vars.css", "repo", config.RepoPath, "error", err)
+						return
+					}
+
+					fp := filepath.Join(config.Outdir, "syntax.css")
+					w, err := os.OpenFile(fp, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
+					if err != nil {
+						logger.Error("failed to open syntax.css for writing", "repo", config.RepoPath, "error", err)
+						return
+					}
+					defer w.Close()
+					if err = formatter.WriteCSS(w, config.ChromaTheme); err != nil {
+						logger.Error("failed to write syntax.css", "repo", config.RepoPath, "error", err)
+						return
+					}
+
+					url := filepath.Join("/", "index.html")
+					config.Logger.Info("root url", "url", url)
+				}(repoCfg)
+			}
+			wg.Wait()
 
 			return nil
 		},
@@ -1328,11 +1494,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Println(strings.HasPrefix(os.Args[0], filepath.Join(os.TempDir(), "go-build")))
-
-	if strings.HasPrefix(os.Args[0], filepath.Join(os.TempDir(), "go-build")) {
-		outDir := app.String("out")
-		port := app.String("port")
+	if strings.HasPrefix(os.Args[0], filepath.Join(os.TempDir(), "go-build")) || os.Getenv("PGIT_WEBSERVER") == "1" {
+		port := "1313"
+		outDir := "public"
 
 		if !isPortAvailable(port, logger) {
 			err := tracerr.Errorf("port %s is already in use", port)

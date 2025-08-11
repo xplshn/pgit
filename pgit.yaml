@@ -1,11 +1,14 @@
-out: ./public
-repo: /home/anto/Documents/TrulyMine/gbc
-theme: gruvbox-light
-label: gbc
-cloneUrl: https://github.com/xplshn/gbc.git
-homeUrl: https://gbc.xplshn.com.ar
-desc: GBC - Go B Compiler
-rootRelative: /
-maxCommits: 100
-hideTreeLastCommit: false
-readme: README.md
+repos:
+  - out: ./public
+    repo: /home/anto/Documents/TrulyMine/gbc
+    revs:
+      - "HEAD"
+    desc: "GBC - Go B Compiler"
+    max-commits: 100
+    readme: "README.md"
+    hide-tree-last-commit: false
+    home-url: "https://gbc.xplshn.com.ar"
+    clone-url: "https://github.com/xplshn/gbc.git"
+    root-relative: "/"
+    theme: "gruvbox-light"
+    label: "gbc"

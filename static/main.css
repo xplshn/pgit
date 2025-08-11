@@ -55,6 +55,55 @@ body {
   margin-bottom: 1rem;
 }
 
+.language-stats {
+  margin-top: 2rem;
+}
+
+.language-bar {
+  display: flex;
+  height: 10px;
+  border-radius: 5px;
+  overflow: hidden;
+  margin-bottom: 1rem;
+  border: 1px solid var(--border);
+}
+
+.language-segment {
+  height: 100%;
+  transition: width 0.3s ease-in-out;
+}
+
+.language-legend {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.language-legend li {
+  display: flex;
+  align-items: center;
+}
+
+.legend-color {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  margin-right: 0.5rem;
+}
+
+.legend-name {
+  font-weight: bold;
+}
+
+.legend-percentage {
+  margin-left: 0.5rem;
+  color: var(--grey-light);
+}
+
 @media only screen and (max-width: 900px) {
   .tree-commit {
     display: none;

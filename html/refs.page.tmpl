@@ -6,26 +6,13 @@
 {{define "content"}}
   <h2 class="text-lg font-bold">refs</h2>
 
-  <ul id="refs-list"></ul>
-
-  <script>
-    fetch("{{.Repo.RootRelative}}refs.json")
-      .then(response => response.json())
-      .then(data => {
-        const ul = document.getElementById("refs-list");
-        data.forEach(ref => {
-          const li = document.createElement("li");
-          if (ref.URL) {
-            const a = document.createElement("a");
-            a.href = ref.URL;
-            a.textContent = ref.Refspec;
-            li.appendChild(a);
-          } else {
-            li.textContent = ref.Refspec;
-          }
-          ul.appendChild(li);
-        });
-      })
-      .catch(error => console.error("Error loading refs:", error));
-  </script>
+  <ul>
+  {{range .Refs}}
+    {{if .URL}}
+      <li><a href="{{.URL}}">{{.Refspec}}</a></li>
+    {{else}}
+      <li>{{.Refspec}}</li>
+    {{end}}
+  {{end}}
+  </ul>
 {{end}}

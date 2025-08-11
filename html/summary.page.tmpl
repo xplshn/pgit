@@ -7,4 +7,22 @@
 
 {{define "content"}}
   {{.Readme}}
+  {{if .LanguageStats}}
+  <div class="language-stats">
+    <div class="language-bar">
+      {{range .LanguageStats}}
+      <span class="language-segment" style="width: {{.Percentage}}%; background-color: {{.Color}};" title="{{.Name}}: {{printf "%.2f" .Percentage}}%"></span>
+      {{end}}
+    </div>
+    <ul class="language-legend">
+      {{range .LanguageStats}}
+      <li>
+        <span class="legend-color" style="background-color: {{.Color}};"></span>
+        <span class="legend-name">{{.Name}}</span>
+        <span class="legend-percentage">{{printf "%.2f" .Percentage}}%</span>
+      </li>
+      {{end}}
+    </ul>
+  </div>
+  {{end}}
 {{end}}
