@@ -1,6 +1,6 @@
 repos:
-  - out: ./www/pub/gbc
-    repo: ./www/repos/gbc
+  - out: ./pub/gbc
+    repo: ./repos/gbc
     revs: ["HEAD"]
     desc: "GBC - Go B Compiler"
     max-commits: 100
@@ -12,8 +12,8 @@ repos:
     theme: "gruvbox-dark"
     label: "gbc"
 
-  - out: ./www/pub/dbin
-    repo: ./www/repos/dbin
+  - out: ./pub/dbin
+    repo: ./repos/dbin
     revs: ["HEAD"]
     desc: "📦 Poor man's package manager. +4164 statically linked binaries in the default repos (amd64/arm64/riscv)! The easy to use, easy to get, suckless software distribution system."
     max-commits: 100
@@ -25,8 +25,8 @@ repos:
     theme: "gruvbox-light"
     label: "dbin"
 
-  - out: ./www/pub/alicelinux
-    repo: ./www/repos/alicelinux
+  - out: ./pub/alicelinux
+    repo: ./repos/alicelinux
     revs: ["HEAD"]
     desc: "Personal fork of https://codeberg.org/emmett1/alicelinux"
     max-commits: 100
@@ -38,8 +38,8 @@ repos:
     theme: "gruvbox-dark"
     label: "alicelinux"
 
-  - out: ./www/pub/pelf
-    repo: ./www/repos/pelf
+  - out: ./pub/pelf
+    repo: ./repos/pelf
     revs: ["HEAD"]
     desc: "The AppBundle format and the AppBundle Creation Tool. Create truly portable single-file programs for Unix clones (Linux and friends), works in a simple & intuitive manner."
     max-commits: 100
@@ -51,8 +51,8 @@ repos:
     theme: "gruvbox-light"
     label: "pelf"
 
-  - out: ./www/pub/cbc
-    repo: ./www/repos/cbc
+  - out: ./pub/cbc
+    repo: ./repos/cbc
     revs: ["HEAD"]
     desc: "C B Compiler"
     max-commits: 100
@@ -64,8 +64,8 @@ repos:
     theme: "gruvbox-dark"
     label: "cbc"
 
-  - out: ./www/pub/eget2
-    repo: ./www/repos/eget2
+  - out: ./pub/eget2
+    repo: ./repos/eget2
     revs: ["HEAD"]
     desc: "A program fetcher that supports Github, Gitlab, Codeberg, GHCR, etc, it also supports extraction of .tar.{gz, zst, xz, flate, br, bz2, lz4, lz, mz, sz, s2, zz}, zip, 7zip, rar archives."
     max-commits: 100
@@ -77,8 +77,8 @@ repos:
     theme: "gruvbox-light"
     label: "eget2"
 
-  - out: ./www/pub/a-utils
-    repo: ./www/repos/a-utils
+  - out: ./pub/a-utils
+    repo: ./repos/a-utils
     revs: ["HEAD"]
     desc: "+19 Unix utilities re-imagined yet POSIX."
     max-commits: 100
