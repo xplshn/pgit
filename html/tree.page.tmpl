@@ -10,13 +10,13 @@
         {{if .IsLast}}
           <span class="font-bold">{{.Text}}</span>
         {{else}}
-          <a href="{{.URL}}">{{.Text}}</a> {{if .IsLast}}{{else}}/{{end}}
+          <a href="{{.URL}}">{{.Text}}</a> /
         {{end}}
       {{end}}
     </div>
 
     {{range .Tree.Items}}
-      <div class="flex justify-between items-center gap-2 p tree-row border-b">
+      <div class="flex justify-between items-center gap-2 p tree-row border-b" data-lang="{{.Language}}">
         <div class="flex-1 tree-path flex items-center gap">
           {{if .IsDir}}
             <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" height="16" width="16" viewBox="0 0 512 512">

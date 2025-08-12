@@ -39,8 +39,14 @@ github.com/urfave/cli-altsrc/v3 v3.0.1 h1:v+gHk59syLk8ao9rYybZs43+D5ut/gzj0omqQ1
 github.com/urfave/cli-altsrc/v3 v3.0.1/go.mod h1:8UtsKKcxFVzvaoySFPfvQOk413T+IXJhaCWyyoPW3yM=
 github.com/urfave/cli/v3 v3.3.8 h1:BzolUExliMdet9NlJ/u4m5vHSotJ3PzEqSAZ1oPMa/E=
 github.com/urfave/cli/v3 v3.3.8/go.mod h1:FJSKtM/9AiiTOJL4fJ6TbMUkxBXn7GO9guZqoZtpYpo=
+github.com/urfave/cli/v3 v3.4.0 h1:+SU5S+CwsDDt3etVtY9hGeAwyUJdbl3qYlFXq8MRgWQ=
+github.com/urfave/cli/v3 v3.4.0/go.mod h1:FJSKtM/9AiiTOJL4fJ6TbMUkxBXn7GO9guZqoZtpYpo=
 github.com/xplshn/tracerr2 v0.0.0-20250811083209-4bbf30a64c99 h1:Z9bqXoo4Jo+/n3V4ocCmBD3Hpa4rsby078enUk9ITJk=
 github.com/xplshn/tracerr2 v0.0.0-20250811083209-4bbf30a64c99/go.mod h1:GVQ8TrcgJjF2HfpYWkJcFEyWuqcS6nRr2sGhG1hOenk=
+github.com/xplshn/tracerr2 v0.0.0-20250812062124-a4a646d2deb0 h1:DDmJMdWzvTYUlRECR8vmxfzJGiBJog2TULTJ7+BDCyk=
+github.com/xplshn/tracerr2 v0.0.0-20250812062124-a4a646d2deb0/go.mod h1:GVQ8TrcgJjF2HfpYWkJcFEyWuqcS6nRr2sGhG1hOenk=
+github.com/yuin/goldmark v1.7.13 h1:GPddIs617DnBLFFVJFgpo1aBfe/4xcvMc3SB5t/D0pA=
+github.com/yuin/goldmark v1.7.13/go.mod h1:ip/1k0VRfGynBgxOz0yCqHrbZXhcjxyuS66Brc7iBKg=
 golang.org/x/sync v0.9.0 h1:fEo0HyrW1GIgZdpbhCRO0PkJajUS5H9IFUztCgEo2jQ=
 golang.org/x/sync v0.9.0/go.mod h1:Czt+wKu1gCyEFDUtn0jG5QVvpJ6rzVqr5aXyt9drQfk=
 golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da h1:noIWHXmPHxILtqtCOPIhSt0ABwskkZKjD3bXGnZGpNY=

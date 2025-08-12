@@ -1,12 +1,18 @@
 {{define "header"}}
 <div class="flex flex-col">
-  <h1 class="text-xl flex gap p-0">
-    {{if .SiteURLs.HomeURL}}
-      <a href="{{.SiteURLs.HomeURL}}">repos</a>
-      <span>/</span>
-    {{end}}
-    <span>{{.Repo.RepoName}}</span>
-  </h1>
+  <div class="flex justify-between items-center flex-wrap">
+    <h1 class="text-xl flex gap p-0">
+      {{if .SiteURLs.HomeURL}}
+        <a href="{{.SiteURLs.HomeURL}}">repos</a>
+        <span>/</span>
+      {{end}}
+      <span>{{.Repo.RepoName}}</span>
+    </h1>
+    <form id="search-form" action="{{.SiteURLs.SearchURL}}" method="get">
+      <input type="search" name="q" id="search-input" placeholder="Search files...">
+      <button type="submit" aria-label="Search" id="search-button"></button>
+    </form>
+  </div>
 
   <nav>
     <a href="{{.SiteURLs.SummaryURL}}">summary</a> |

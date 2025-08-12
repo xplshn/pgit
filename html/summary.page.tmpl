@@ -1,12 +1,14 @@
 {{template "base" .}}
 
-{{define "title"}}{{.Repo.RepoName}}{{if .Repo.Desc}}- {{.Repo.Desc}}{{end}}{{end}}
+{{define "title"}}{{.Repo.RepoName}}{{if .Repo.Desc}} - {{.Repo.Desc}}{{end}}{{end}}
 {{define "meta"}}
 <link rel="stylesheet" href="{{.Repo.RootRelative}}syntax.css" />
 {{end}}
 
 {{define "content"}}
-  {{.Readme}}
+  <div class="md">
+    {{.Readme}}
+  </div>
   {{if .LanguageStats}}
   <div class="language-stats">
     <div class="language-bar">
@@ -18,7 +20,7 @@
       {{range .LanguageStats}}
       <li>
         <span class="legend-color" style="background-color: {{.Color}};"></span>
-        <span class="legend-name">{{.Name}}</span>
+        <a href="{{.URL}}" class="legend-name">{{.Name}}</a>
         <span class="legend-percentage">{{printf "%.2f" .Percentage}}%</span>
       </li>
       {{end}}

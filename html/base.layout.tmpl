@@ -5,8 +5,8 @@
     <meta charset='utf-8'>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{{template "title" .}}</title>
-
-    <meta name="keywords" content="git code forge repo repository" />
+    <meta name="description" content="{{.Repo.Desc}}">
+    <meta name="keywords" content="git, code, forge, repo, repository, {{.Repo.RepoName}}" />
 
     {{template "meta" .}}
 
@@ -20,6 +20,7 @@
     <main>{{template "content" .}}</main>
     <hr class="my" />
     <footer>{{template "footer" .}}</footer>
+    <script src="{{.Repo.RootRelative}}search.js" defer></script>
   </body>
 </html>
 {{end}}

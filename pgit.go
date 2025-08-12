@@ -10,8 +10,6 @@ import (
 	"fmt"
 	"html/template"
 	"log/slog"
-	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -25,9 +23,12 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 	"github.com/dustin/go-humanize"
 	"github.com/gogs/git-module"
-	"github.com/h2non/filetype"
 	"github.com/urfave/cli/v3"
 	"github.com/xplshn/tracerr2"
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/parser"
+	gmdhtml "github.com/yuin/goldmark/renderer/html"
 	"gopkg.in/yaml.v3"
 )
 
@@ -37,32 +38,46 @@ var embedFS embed.FS
 //go:embed static/*
 var staticFS embed.FS
 
+var md = goldmark.New(
+	goldmark.WithExtensions(extension.GFM),
+	goldmark.WithParserOptions(
+		parser.WithAutoHeadingID(),
+	),
+	goldmark.WithRendererOptions(
+		gmdhtml.WithHardWraps(),
+		gmdhtml.WithXHTML(),
+		gmdhtml.WithUnsafe(),
+	),
+)
+
+// Structs
 type GitAttribute struct {
 	Pattern    string
 	Attributes map[string]string
 }
 
 type RepoConfig struct {
-	Outdir             string   `yaml:"out"`
-	RepoPath           string   `yaml:"repo"`
+	Outdir             string `yaml:"out"`
+	RepoPath           string `yaml:"repo"`
 	Revs               []string `yaml:"revs"`
-	Desc               string   `yaml:"desc"`
-	MaxCommits         int      `yaml:"max-commits"`
-	Readme             string   `yaml:"readme"`
-	HideTreeLastCommit bool     `yaml:"hide-tree-last-commit"`
-	HomeURL            string   `yaml:"home-url"`
-	CloneURL           string   `yaml:"clone-url"`
-	RootRelative       string   `yaml:"root-relative"`
-	ThemeName          string   `yaml:"theme"`
-	Label              string   `yaml:"label"`
-	Cache              map[string]bool
-	Mutex              sync.RWMutex
+	Desc               string `yaml:"desc"`
+	MaxCommits         int    `yaml:"max-commits"`
+	Readme             string `yaml:"readme"`
+	HideTreeLastCommit bool   `yaml:"hide-tree-last-commit"`
+	HomeURL            string `yaml:"home-url"`
+	CloneURL           string `yaml:"clone-url"`
+	RootRelative       string `yaml:"root-relative"`
+	ThemeName          string `yaml:"theme"`
+	Label              string `yaml:"label"`
+	RenderMarkdown     *bool  `yaml:"renderMarkdown"`
+	Cache              sync.Map
 	RepoName           string
 	Logger             *slog.Logger
 	ChromaTheme        *chroma.Style
 	Formatter          *html.Formatter
 	GitAttributes      []GitAttribute
-	LanguageOverrides  map[string]string
+	Whitelist          map[string]bool `yaml:"-"`
+	Blacklist          map[string]bool `yaml:"-"`
 }
 
 type RevInfo interface {
@@ -76,26 +91,10 @@ type RevData struct {
 	Config *RepoConfig
 }
 
-func (r *RevData) ID() string {
-	return r.id
-}
-
-func (r *RevData) Name() string {
-	return r.name
-}
-
-func (r *RevData) TreeURL() template.URL {
-	return r.Config.getTreeURL(r)
-}
-
-func (r *RevData) LogURL() template.URL {
-	return r.Config.getLogsURL(r)
-}
-
-type TagData struct {
-	Name string
-	URL  template.URL
-}
+func (r *RevData) ID() string   { return r.id }
+func (r *RevData) Name() string { return r.name }
+func (r *RevData) TreeURL() template.URL { return r.Config.getTreeURL(r) }
+func (r *RevData) LogURL() template.URL  { return r.Config.getLogsURL(r) }
 
 type CommitData struct {
 	SummaryStr string
@@ -116,6 +115,7 @@ type TreeItem struct {
 	Name       string
 	Icon       string
 	Path       string
+	Language   string
 	URL        template.URL
 	CommitID   string
 	CommitURL  template.URL
@@ -147,12 +147,14 @@ type DiffRenderFile struct {
 type RefInfo struct {
 	ID      string       `json:"ID"`
 	Refspec string       `json:"Refspec"`
-	URL     template.URL `json:"URL"`
+	URL     template.URL `json:"URL,omitempty"`
 }
 
-type BranchOutput struct {
-	Readme     string
-	LastCommit *git.Commit
+type SearchIndexEntry struct {
+	Name     string `json:"name"`
+	Path     string `json:"path"`
+	URL      string `json:"url"`
+	Language string `json:"language"`
 }
 
 type SiteURLs struct {
@@ -160,6 +162,7 @@ type SiteURLs struct {
 	CloneURL   template.URL
 	SummaryURL template.URL
 	RefsURL    template.URL
+	SearchURL  template.URL
 }
 
 type PageData struct {
@@ -179,6 +182,13 @@ type LanguageStat struct {
 	Name       string
 	Percentage float64
 	Color      string
+	URL        template.URL
+}
+
+type LanguagePageData struct {
+	*PageData
+	Language string
+	Files    []*SearchIndexEntry
 }
 
 type TreePageData struct {
@@ -222,8 +232,125 @@ type WriteData struct {
 	Data     any
 }
 
-func diffFileType(_type git.DiffFileType) string {
-	switch _type {
+// Helper Functions
+func (c *RepoConfig) getFileAttributes(filename string) map[string]string {
+	var lastMatch *GitAttribute
+
+	for i := range c.GitAttributes {
+		attr := &c.GitAttributes[i]
+		pattern := attr.Pattern
+		matched := false
+
+		// Handle **/<pattern> by matching against the base name.
+		// This is a simplification but covers the most common use case.
+		if strings.HasPrefix(pattern, "**/") {
+			suffixPattern := strings.TrimPrefix(pattern, "**/")
+			if m, _ := filepath.Match(suffixPattern, filepath.Base(filename)); m {
+				matched = true
+			}
+		} else {
+			// Standard glob matching against the full path.
+			if m, _ := filepath.Match(pattern, filename); m {
+				matched = true
+			}
+		}
+
+		if matched {
+			// Keep overwriting with the last match found, as this is how .gitattributes works.
+			lastMatch = attr
+		}
+	}
+
+	if lastMatch != nil {
+		return lastMatch.Attributes
+	}
+
+	return nil
+}
+
+func (c *RepoConfig) getLanguageInfo(filename string, data []byte) (displayName string, lexer chroma.Lexer, isText bool) {
+	attrs := c.getFileAttributes(filename)
+	langOverride := attrs["linguist-language"]
+	displayOverride := attrs["linguist-display-name"]
+
+	lexerNameForLookup := ""
+
+	// An explicit language override in .gitattributes is the highest priority for lexer selection.
+	if langOverride != "" {
+		lexerNameForLookup = langOverride
+	} else {
+		// If no override, proceed with detection.
+		detectedLexer := lexers.Match(filename)
+		if detectedLexer == nil && len(data) > 0 {
+			detectedLexer = lexers.Analyse(string(data))
+		}
+		if detectedLexer != nil {
+			lexerName := detectedLexer.Config().Name
+			// Apply blacklist/whitelist to detected languages.
+			isWhitelisted := c.Whitelist == nil || c.Whitelist[lexerName]
+			isBlacklisted := c.Blacklist != nil && c.Blacklist[lexerName]
+			if isWhitelisted && !isBlacklisted {
+				lexerNameForLookup = lexerName
+			}
+		}
+	}
+
+	if lexerNameForLookup != "" {
+		lexer = lexers.Get(lexerNameForLookup)
+	}
+
+	// Determine the display name. `linguist-display-name` has the highest priority.
+	if displayOverride != "" {
+		displayName = displayOverride
+	} else if lexer != nil {
+		displayName = lexer.Config().Name
+	} else if langOverride != "" {
+		// Fallback for unknown languages specified in .gitattributes
+		displayName = langOverride
+	}
+
+	// Determine file type and set final fallbacks.
+	if data != nil && bytes.Contains(data, []byte{0}) {
+		isText = false
+		if displayName == "" {
+			displayName = "Binary"
+		}
+	} else {
+		isText = true
+		if lexer == nil {
+			lexer = lexers.Get("plaintext")
+		}
+		if displayName == "" {
+			displayName = "Text"
+		}
+	}
+	return
+}
+
+func (c *RepoConfig) highlightSyntax(text, filename string, blob *git.Blob) (template.HTML, string, error) {
+	if blob != nil && blob.Size() > 800*1024 {
+		return "file too large to display (>800KB)", "Binary", nil
+	}
+
+	displayName, lexer, isText := c.getLanguageInfo(filename, []byte(text))
+	if !isText {
+		return "binary file, cannot display", "Binary", nil
+	}
+
+	iterator, err := lexer.Tokenise(nil, text)
+	if err != nil {
+		return template.HTML(text), displayName, tracerr.Errorf("tokenization failed: %w", err)
+	}
+
+	var buf bytes.Buffer
+	if err := c.Formatter.Format(&buf, c.ChromaTheme, iterator); err != nil {
+		return template.HTML(text), displayName, tracerr.Errorf("formatting failed: %w", err)
+	}
+	return template.HTML(buf.String()), displayName, nil
+}
+
+func diffFileType(t git.DiffFileType) string {
+	switch t {
 	case git.DiffFileAdd:
 		return "A"
 	case git.DiffFileChange:
@@ -237,118 +364,8 @@ func diffFileType(_type git.DiffFileType) string {
 	}
 }
 
-func (c *RepoConfig) getLanguageOverride(filename string) (string, string) {
-	if c.GitAttributes == nil {
-		return "", ""
-	}
-
-	for _, attr := range c.GitAttributes {
-		if matched, _ := filepath.Match(attr.Pattern, filename); matched {
-			lang, langOk := attr.Attributes["linguist-language"]
-			display, displayOk := attr.Attributes["linguist-display-name"]
-
-			if langOk {
-				if displayOk {
-					return lang, display
-				}
-				return lang, lang
-			}
-		}
-	}
-	return "", ""
-}
-
-func (c *RepoConfig) parseText(filename string, text string, blob *git.Blob) (string, string, error) {
-	if blob != nil && blob.Size() > 800*1024 {
-		return "file too large to display (>800KB)", "", nil
-	}
-
-	langOverride, displayOverride := c.getLanguageOverride(filename)
-
-	var lexer chroma.Lexer
-	if langOverride != "" {
-		lexer = lexers.Get(langOverride)
-	}
-
-	if lexer == nil {
-		lexer = lexers.Match(filename)
-	}
-
-	if lexer == nil {
-		lexer = lexers.Get("plaintext")
-	}
-
-	lang := "Text"
-	if lexer != nil {
-		config := lexer.Config()
-		if config != nil {
-			lang = config.Name
-		}
-	}
-
-	if displayOverride != "" {
-		lang = displayOverride
-	}
-
-	iterator, err := lexer.Tokenise(nil, text)
-	if err != nil {
-		return text, lang, tracerr.Errorf("%v", err)
-	}
-	var buf bytes.Buffer
-	err = c.Formatter.Format(&buf, c.ChromaTheme, iterator)
-	if err != nil {
-		return text, lang, tracerr.Errorf("%v", err)
-	}
-	return buf.String(), lang, nil
-}
-
-func (c *RepoConfig) getLanguageForStats(filename string, data []byte) string {
-	langOverride, displayOverride := c.getLanguageOverride(filename)
-	if langOverride != "" {
-		if displayOverride != "" {
-			return displayOverride
-		}
-		return langOverride
-	}
-
-	lexer := lexers.Match(filename)
-	if lexer != nil {
-		config := lexer.Config()
-		if config != nil {
-			return config.Name
-		}
-	}
-
-	if isText(data) {
-		return "Text"
-	}
-
-	return ""
-}
-
-func isText(s []byte) bool {
-	if filetype.IsMIME(s, "application/octet-stream") {
-		return false
-	}
-	return !bytes.Contains(s, []byte{0})
-}
-
-func isTextFile(text string, blob *git.Blob) bool {
-	if blob != nil && blob.Size() > 800*1024 {
-		return false
-	}
-	return isText([]byte(text))
-}
-
-func toPretty(b int64) string {
-	return humanize.Bytes(uint64(b))
-}
-
-func repoName(root string) string {
-	_, file := filepath.Split(root)
-	return file
-}
-
+func toPretty(b int64) string { return humanize.Bytes(uint64(b)) }
+func repoName(root string) string { return filepath.Base(root) }
 func readmeFile(repo *RepoConfig) string {
 	if repo.Readme == "" {
 		return "readme.md"
@@ -356,133 +373,92 @@ func readmeFile(repo *RepoConfig) string {
 	return strings.ToLower(repo.Readme)
 }
 
-func (c *RepoConfig) writeHtml(writeData *WriteData) error {
-	ts, err := template.ParseFS(
-		embedFS,
-		writeData.Template,
-		"html/header.partial.tmpl",
-		"html/footer.partial.tmpl",
-		"html/base.layout.tmpl",
-	)
+// File Writing
+func (c *RepoConfig) executeTemplate(w *os.File, data *WriteData) error {
+	ts, err := template.ParseFS(embedFS, data.Template, "html/*.partial.tmpl", "html/base.layout.tmpl")
 	if err != nil {
-		c.Logger.Error("failed to parse templates", "error", err)
-		return tracerr.Errorf("%v", err)
+		return tracerr.Errorf("failed to parse template %s: %w", data.Template, err)
 	}
+	return ts.Execute(w, data.Data)
+}
 
-	dir := filepath.Join(c.Outdir, writeData.Subdir)
+func (c *RepoConfig) writeHTML(data *WriteData) error {
+	dir := filepath.Join(c.Outdir, data.Subdir)
 	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
-		c.Logger.Error("failed to create directory", "dir", dir, "error", err)
-		return tracerr.Errorf("%v", err)
+		return tracerr.Errorf("failed to create directory %s: %w", dir, err)
 	}
 
-	fp := filepath.Join(dir, writeData.Filename)
+	fp := filepath.Join(dir, data.Filename)
 	c.Logger.Info("writing", "filepath", fp)
 
-	w, err := os.OpenFile(fp, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
+	w, err := os.Create(fp)
 	if err != nil {
-		c.Logger.Error("failed to open file for writing", "filepath", fp, "error", err)
-		return tracerr.Errorf("%v", err)
+		return tracerr.Errorf("failed to create file %s: %w", fp, err)
 	}
 	defer w.Close()
 
-	if err := ts.Execute(w, writeData.Data); err != nil {
+	if err := c.executeTemplate(w, data); err != nil {
 		c.Logger.Error("failed to execute template", "filepath", fp, "error", err)
-		return tracerr.Errorf("%v", err)
+		return err
 	}
 	return nil
 }
 
-func (c *RepoConfig) copyStatic(dir string) error {
-	entries, err := staticFS.ReadDir(dir)
+func (c *RepoConfig) copyStaticFiles() error {
+	files, err := staticFS.ReadDir("static")
 	if err != nil {
-		c.Logger.Error("failed to read static directory", "dir", dir, "error", err)
-		return tracerr.Errorf("%v", err)
+		return tracerr.Errorf("failed to read static dir: %w", err)
 	}
-
-	for _, e := range entries {
-		infp := filepath.Join(dir, e.Name())
-		if e.IsDir() {
+	for _, file := range files {
+		if file.IsDir() {
 			continue
 		}
-
-		w, err := staticFS.ReadFile(infp)
+		srcPath := filepath.Join("static", file.Name())
+		destPath := filepath.Join(c.Outdir, file.Name())
+		content, err := staticFS.ReadFile(srcPath)
 		if err != nil {
-			c.Logger.Error("failed to read static file", "file", infp, "error", err)
-			return tracerr.Errorf("%v", err)
+			return tracerr.Errorf("failed to read static file %s: %w", srcPath, err)
 		}
-		fp := filepath.Join(c.Outdir, e.Name())
-		c.Logger.Info("writing", "filepath", fp)
-		if err := os.WriteFile(fp, w, 0644); err != nil {
-			c.Logger.Error("failed to write static file", "file", fp, "error", err)
-			return tracerr.Errorf("%v", err)
+		c.Logger.Info("writing static file", "filepath", destPath)
+		if err := os.WriteFile(destPath, content, 0644); err != nil {
+			return tracerr.Errorf("failed to write static file %s: %w", destPath, err)
 		}
 	}
-
 	return nil
+}
+
+func (c *RepoConfig) writePage(template, filename, subdir string, data any) {
+	if err := c.writeHTML(&WriteData{template, filename, subdir, data}); err != nil {
+		c.Logger.Error("failed to write page", "template", template, "error", err)
+	}
 }
 
 func (c *RepoConfig) writeRootSummary(data *PageData, readme template.HTML, langStats []*LanguageStat, totalSize int64) {
-	c.Logger.Info("writing root html", "repoPath", c.RepoPath)
-	if err := c.writeHtml(&WriteData{
-		Filename: "index.html",
-		Template: "html/summary.page.tmpl",
-		Data: &SummaryPageData{
-			PageData:      data,
-			Readme:        readme,
-			LanguageStats: langStats,
-			TotalLanguage: totalSize,
-		},
-	}); err != nil {
-		c.Logger.Error("failed to write root summary", "error", err)
+	c.Logger.Info("writing root summary", "repoPath", c.RepoPath)
+	pageData := &SummaryPageData{
+		PageData:      data,
+		Readme:        readme,
+		LanguageStats: langStats,
+		TotalLanguage: totalSize,
 	}
+	c.writePage("html/summary.page.tmpl", "index.html", "", pageData)
 }
 
 func (c *RepoConfig) writeTree(data *PageData, tree *TreeRoot) {
 	c.Logger.Info("writing tree", "treePath", tree.Path)
-	if err := c.writeHtml(&WriteData{
-		Filename: "index.html",
-		Subdir:   tree.Path,
-		Template: "html/tree.page.tmpl",
-		Data: &TreePageData{
-			PageData: data,
-			Tree:     tree,
-		},
-	}); err != nil {
-		c.Logger.Error("failed to write tree", "path", tree.Path, "error", err)
-	}
+	c.writePage("html/tree.page.tmpl", "index.html", tree.Path, &TreePageData{data, tree})
 }
 
 func (c *RepoConfig) writeLog(data *PageData, logs []*CommitData) {
 	c.Logger.Info("writing log file", "revision", data.RevData.Name())
-	if err := c.writeHtml(&WriteData{
-		Filename: "index.html",
-		Subdir:   getLogBaseDir(data.RevData),
-		Template: "html/log.page.tmpl",
-		Data: &LogPageData{
-			PageData:   data,
-			NumCommits: len(logs),
-			Logs:       logs,
-		},
-	}); err != nil {
-		c.Logger.Error("failed to write log", "revision", data.RevData.Name(), "error", err)
-	}
+	c.writePage("html/log.page.tmpl", "index.html", getLogBaseDir(data.RevData), &LogPageData{data, len(logs), logs})
 }
 
 func (c *RepoConfig) writeRefs(data *PageData, refs []*RefInfo) {
 	c.Logger.Info("writing refs", "repoPath", c.RepoPath)
-	if err := c.writeHtml(&WriteData{
-		Filename: "refs.html",
-		Template: "html/refs.page.tmpl",
-		Data: &RefPageData{
-			PageData: data,
-			Refs:     refs,
-		},
-	}); err != nil {
-		c.Logger.Error("failed to write refs html", "error", err)
-		return
-	}
+	c.writePage("html/refs.page.tmpl", "refs.html", "", &RefPageData{data, refs})
 
-	jsonData, err := json.Marshal(refs)
+	jsonData, err := json.MarshalIndent(refs, "", "  ")
 	if err != nil {
 		c.Logger.Error("failed to marshal refs to json", "error", err)
 		return
@@ -493,75 +469,87 @@ func (c *RepoConfig) writeRefs(data *PageData, refs []*RefInfo) {
 	}
 }
 
+func (c *RepoConfig) writeSearchIndex(searchIndex []*SearchIndexEntry) {
+	c.Logger.Info("writing search index")
+	jsonData, err := json.Marshal(searchIndex)
+	if err != nil {
+		c.Logger.Error("failed to marshal search index", "error", err)
+		return
+	}
+	fp := filepath.Join(c.Outdir, "search-index.json")
+	if err := os.WriteFile(fp, jsonData, 0644); err != nil {
+		c.Logger.Error("failed to write search-index.json", "error", err)
+	}
+}
+
+func (c *RepoConfig) writeLanguagePage(pageData *PageData, lang string, files []*SearchIndexEntry) {
+	c.Logger.Info("writing language page", "language", lang)
+	data := &LanguagePageData{
+		PageData: pageData,
+		Language: lang,
+		Files:    files,
+	}
+	c.writePage("html/language.page.tmpl", fmt.Sprintf("lang-%s.html", lang), "", data)
+}
+
+func (c *RepoConfig) writeSearchPage(pageData *PageData) {
+	c.Logger.Info("writing search page")
+	c.writePage("html/search.page.tmpl", "search.html", "", pageData)
+}
+
 func (c *RepoConfig) writeHTMLTreeFile(pageData *PageData, treeItem *TreeItem) (string, string, int64, error) {
-	readme := ""
 	b, err := treeItem.Entry.Blob().Bytes()
 	if err != nil {
-		c.Logger.Error("failed to get blob bytes", "file", treeItem.Path, "error", err)
-		return "", "", 0, tracerr.Errorf("%v", err)
+		return "", "", 0, tracerr.Errorf("failed to get blob bytes for %s: %w", treeItem.Path, err)
 	}
-	str := string(b)
 
-	if !isText(b) {
-		treeItem.IsTextFile = false
+	var contentsHTML template.HTML
+	displayName := ""
+	isMarkdown := (strings.HasSuffix(treeItem.Entry.Name(), ".md") || strings.HasSuffix(treeItem.Entry.Name(), ".markdown"))
+
+	if isMarkdown && *pageData.Repo.RenderMarkdown {
+		var buf bytes.Buffer
+		if err := md.Convert(b, &buf); err != nil {
+			c.Logger.Error("failed to render markdown", "file", treeItem.Entry.Name(), "error", err)
+			contentsHTML = template.HTML("Failed to render markdown")
+		} else {
+			contentsHTML = template.HTML(buf.String())
+		}
+		displayName = "Markdown"
 	} else {
-		treeItem.IsTextFile = isTextFile(str, treeItem.Entry.Blob())
-	}
-
-	contentsStr := "binary file, cannot display"
-	lang := ""
-	numLines := 0
-	if treeItem.IsTextFile {
-		numLines = len(strings.Split(str, "\n"))
-		var parseErr error
-		contentsStr, lang, parseErr = c.parseText(treeItem.Entry.Name(), str, treeItem.Entry.Blob())
-		if parseErr != nil {
-			c.Logger.Error("failed to parse text file", "file", treeItem.Entry.Name(), "error", parseErr)
-			return "", "", 0, tracerr.Errorf("%v", parseErr)
+		contentsHTML, displayName, err = c.highlightSyntax(string(b), treeItem.Path, treeItem.Entry.Blob())
+		if err != nil {
+			c.Logger.Error("failed to highlight syntax", "file", treeItem.Entry.Name(), "error", err)
 		}
 	}
-	treeItem.NumLines = numLines
+
+	treeItem.Language = displayName
+	treeItem.IsTextFile = displayName != "Binary"
+	if treeItem.IsTextFile {
+		treeItem.NumLines = len(strings.Split(string(b), "\n"))
+	}
 
 	d := filepath.Dir(treeItem.Path)
-
-	nameLower := strings.ToLower(treeItem.Entry.Name())
-	summary := readmeFile(pageData.Repo)
-	if d == "." && nameLower == summary {
-		readme = contentsStr
+	readme := ""
+	if d == "." && strings.EqualFold(treeItem.Entry.Name(), readmeFile(pageData.Repo)) {
+		readme = string(contentsHTML)
 	}
 
-	if err := c.writeHtml(&WriteData{
-		Filename: fmt.Sprintf("%s.html", treeItem.Entry.Name()),
-		Template: "html/file.page.tmpl",
-		Data: &FilePageData{
-			PageData: pageData,
-			Contents: template.HTML(contentsStr),
-			Item:     treeItem,
-			Language: lang,
-		},
-		Subdir: getFileDir(pageData.RevData, d),
-	}); err != nil {
-		c.Logger.Error("failed to write html tree file", "file", treeItem.Entry.Name(), "error", err)
-		return "", "", 0, tracerr.Errorf("%v", err)
-	}
-	return readme, lang, treeItem.Entry.Size(), nil
+	c.writePage("html/file.page.tmpl", fmt.Sprintf("%s.html", treeItem.Entry.Name()), getFileDir(pageData.RevData, d), &FilePageData{
+		PageData: pageData,
+		Contents: contentsHTML,
+		Item:     treeItem,
+		Language: displayName,
+	})
+
+	return readme, displayName, treeItem.Entry.Size(), nil
 }
 
 func (c *RepoConfig) writeLogDiff(repo *git.Repository, pageData *PageData, commit *CommitData) {
 	commitID := commit.ID.String()
-
-	c.Mutex.RLock()
-	hasCommit := c.Cache[commitID]
-	c.Mutex.RUnlock()
-
-	if hasCommit {
-		c.Logger.Info("commit file already generated, skipping", "commitID", getShortID(commitID))
+	if _, loaded := c.Cache.LoadOrStore(commitID, true); loaded {
 		return
 	}
-
-	c.Mutex.Lock()
-	c.Cache[commitID] = true
-	c.Mutex.Unlock()
 
 	diff, err := repo.Diff(commitID, 0, 0, 0, git.DiffOptions{})
 	if err != nil {
@@ -574,9 +562,17 @@ func (c *RepoConfig) writeLogDiff(repo *git.Repository, pageData *PageData, comm
 		TotalAdditions: diff.TotalAdditions(),
 		TotalDeletions: diff.TotalDeletions(),
 	}
-	fls := []*DiffRenderFile{}
 	for _, file := range diff.Files {
-		fl := &DiffRenderFile{
+		var contentBuilder strings.Builder
+		for _, section := range file.Sections {
+			for _, line := range section.Lines {
+				contentBuilder.WriteString(line.Content)
+				contentBuilder.WriteByte('\n')
+			}
+		}
+		finContent, _, _ := c.highlightSyntax(contentBuilder.String(), "commit.diff", nil)
+
+		rnd.Files = append(rnd.Files, &DiffRenderFile{
 			FileType:     diffFileType(file.Type),
 			OldMode:      file.OldMode(),
 			OldName:      file.OldName(),
@@ -584,25 +580,11 @@ func (c *RepoConfig) writeLogDiff(repo *git.Repository, pageData *PageData, comm
 			Name:         file.Name,
 			NumAdditions: file.NumAdditions(),
 			NumDeletions: file.NumDeletions(),
-		}
-		content := ""
-		for _, section := range file.Sections {
-			for _, line := range section.Lines {
-				content += fmt.Sprintf("%s\n", line.Content)
-			}
-		}
-		finContent, _, parseErr := c.parseText("commit.diff", content, nil)
-		if parseErr != nil {
-			c.Logger.Error("failed to parse diff content", "commitID", getShortID(commitID), "error", parseErr)
-			continue
-		}
-
-		fl.Content = template.HTML(finContent)
-		fls = append(fls, fl)
+			Content:      finContent,
+		})
 	}
-	rnd.Files = fls
 
-	commitData := &CommitPageData{
+	c.writePage("html/commit.page.tmpl", fmt.Sprintf("%s.html", commitID), "commits", &CommitPageData{
 		PageData:  pageData,
 		Commit:    commit,
 		CommitID:  getShortID(commitID),
@@ -610,81 +592,45 @@ func (c *RepoConfig) writeLogDiff(repo *git.Repository, pageData *PageData, comm
 		Parent:    getShortID(commit.ParentID),
 		CommitURL: c.getCommitURL(commitID),
 		ParentURL: c.getCommitURL(commit.ParentID),
-	}
-
-	if err := c.writeHtml(&WriteData{
-		Filename: fmt.Sprintf("%s.html", commitID),
-		Template: "html/commit.page.tmpl",
-		Subdir:   "commits",
-		Data:     commitData,
-	}); err != nil {
-		c.Logger.Error("failed to write log diff", "commit", getShortID(commitID), "error", err)
-	}
+	})
 }
 
-func (c *RepoConfig) getSummaryURL() template.URL {
-	url := c.RootRelative + "index.html"
-	return template.URL(url)
-}
-
-func (c *RepoConfig) getRefsURL() template.URL {
-	url := c.RootRelative + "refs.html"
-	return template.URL(url)
-}
-
-func getRevIDForURL(info RevInfo) string {
-	return info.Name()
-}
-
-func getTreeBaseDir(info RevInfo) string {
-	subdir := getRevIDForURL(info)
-	return filepath.Join("/", "tree", subdir)
-}
-
-func getLogBaseDir(info RevInfo) string {
-	subdir := getRevIDForURL(info)
-	return filepath.Join("/", "logs", subdir)
-}
-
-func getFileBaseDir(info RevInfo) string {
-	return filepath.Join(getTreeBaseDir(info), "item")
-}
-
+// URL Generation
+func (c *RepoConfig) getSummaryURL() template.URL { return template.URL(c.RootRelative + "index.html") }
+func (c *RepoConfig) getRefsURL() template.URL    { return template.URL(c.RootRelative + "refs.html") }
+func (c *RepoConfig) getSearchURL() template.URL  { return template.URL(c.RootRelative + "search.html") }
+func getRevIDForURL(info RevInfo) string          { return info.Name() }
+func getTreeBaseDir(info RevInfo) string          { return filepath.Join("/", "tree", getRevIDForURL(info)) }
+func getLogBaseDir(info RevInfo) string           { return filepath.Join("/", "logs", getRevIDForURL(info)) }
+func getFileBaseDir(info RevInfo) string          { return filepath.Join(getTreeBaseDir(info), "item") }
 func getFileDir(info RevInfo, fname string) string {
 	return filepath.Join(getFileBaseDir(info), fname)
 }
-
+func (c *RepoConfig) compileURL(parts ...string) template.URL {
+	return template.URL(c.RootRelative + strings.TrimPrefix(filepath.Join(parts...), "/"))
+}
 func (c *RepoConfig) getFileURL(info RevInfo, fname string) template.URL {
-	return c.compileURL(getFileBaseDir(info), fname)
+	return c.compileURL(getFileBaseDir(info), fmt.Sprintf("%s.html", fname))
 }
-
-func (c *RepoConfig) compileURL(dir, fname string) template.URL {
-	purl := c.RootRelative + strings.TrimPrefix(dir, "/")
-	url := filepath.Join(purl, fname)
-	return template.URL(url)
-}
-
 func (c *RepoConfig) getTreeURL(info RevInfo) template.URL {
-	dir := getTreeBaseDir(info)
-	return c.compileURL(dir, "index.html")
+	return c.compileURL(getTreeBaseDir(info), "index.html")
 }
-
 func (c *RepoConfig) getLogsURL(info RevInfo) template.URL {
-	dir := getLogBaseDir(info)
-	return c.compileURL(dir, "index.html")
+	return c.compileURL(getLogBaseDir(info), "index.html")
 }
-
 func (c *RepoConfig) getCommitURL(commitID string) template.URL {
-	url := fmt.Sprintf("%scommits/%s.html", c.RootRelative, commitID)
-	return template.URL(url)
+	if commitID == "" {
+		return ""
+	}
+	return c.compileURL("commits", fmt.Sprintf("%s.html", commitID))
 }
-
 func (c *RepoConfig) getURLs() *SiteURLs {
 	return &SiteURLs{
 		HomeURL:    template.URL(c.HomeURL),
 		CloneURL:   template.URL(c.CloneURL),
 		RefsURL:    c.getRefsURL(),
 		SummaryURL: c.getSummaryURL(),
+		SearchURL:  c.getSearchURL(),
 	}
 }
 
@@ -695,18 +641,36 @@ func getShortID(id string) string {
 	return id[:7]
 }
 
-func parseGitAttributes(path string) ([]GitAttribute, error) {
+func parseGitAttributes(path string) (attrs []GitAttribute, whitelist, blacklist map[string]bool, err error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	defer file.Close()
 
-	var attrs []GitAttribute
+	whitelist = make(map[string]bool)
+	blacklist = make(map[string]bool)
 	scanner := bufio.NewScanner(file)
+
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		processDirective := func(prefix string, store map[string]bool) bool {
+			if strings.HasPrefix(line, prefix) {
+				if kv := strings.SplitN(line, "=", 2); len(kv) == 2 {
+					for _, lang := range strings.Split(strings.Trim(kv[1], `"`), ",") {
+						store[strings.TrimSpace(lang)] = true
+					}
+				}
+				return true
+			}
+			return false
+		}
+
+		if processDirective("pgit-whitelist", whitelist) || processDirective("pgit-blacklist", blacklist) {
 			continue
 		}
 
@@ -718,52 +682,53 @@ func parseGitAttributes(path string) ([]GitAttribute, error) {
 		pattern := parts[0]
 		attributes := make(map[string]string)
 		for _, attrStr := range parts[1:] {
-			if strings.Contains(attrStr, "=") {
-				kv := strings.SplitN(attrStr, "=", 2)
-				attributes[kv[0]] = kv[1]
+			if kv := strings.SplitN(attrStr, "=", 2); len(kv) == 2 {
+				attributes[kv[0]] = strings.Trim(kv[1], `"`)
 			} else {
 				attributes[attrStr] = "true"
 			}
 		}
-		attrs = append(attrs, GitAttribute{Pattern: pattern, Attributes: attributes})
+		attrs = append(attrs, GitAttribute{pattern, attributes})
 	}
 
-	return attrs, scanner.Err()
+	if len(whitelist) == 0 {
+		whitelist = nil
+	}
+	if len(blacklist) == 0 {
+		blacklist = nil
+	}
+	return attrs, whitelist, blacklist, scanner.Err()
 }
 
-func (c *RepoConfig) writeRepo() (*BranchOutput, error) {
+func (c *RepoConfig) writeRepo() error {
 	c.Logger.Info("writing repo", "repoPath", c.RepoPath)
 	repo, err := git.Open(c.RepoPath)
 	if err != nil {
-		c.Logger.Error("failed to open git repository", "path", c.RepoPath, "error", err)
-		return nil, tracerr.Errorf("%v", err)
+		return tracerr.Errorf("failed to open git repo %s: %w", c.RepoPath, err)
 	}
 
 	gitAttrPath := filepath.Join(c.RepoPath, ".gitattributes")
 	if _, err := os.Stat(gitAttrPath); err == nil {
-		attrs, err := parseGitAttributes(gitAttrPath)
-		if err == nil {
-			c.GitAttributes = attrs
-		} else {
-			c.Logger.Warn("failed to parse .gitattributes file", "path", gitAttrPath, "error", err)
+		var parseErr error
+		c.GitAttributes, c.Whitelist, c.Blacklist, parseErr = parseGitAttributes(gitAttrPath)
+		if parseErr != nil {
+			c.Logger.Warn("failed to parse .gitattributes file", "path", gitAttrPath, "error", parseErr)
 		}
 	}
 
 	refs, err := repo.ShowRef(git.ShowRefOptions{Heads: true, Tags: true})
 	if err != nil {
-		c.Logger.Error("failed to get refs", "error", err)
-		return nil, tracerr.Errorf("%v", err)
+		return tracerr.Errorf("failed to get refs: %w", err)
 	}
 
 	var first *RevData
-	revs := []*RevData{}
+	var revs []*RevData
 	for _, revStr := range c.Revs {
 		fullRevID, err := repo.RevParse(revStr)
 		if err != nil {
-			c.Logger.Error("failed to parse revision", "rev", revStr, "error", err)
-			return nil, tracerr.Errorf("%v", err)
+			c.Logger.Warn("failed to parse revision, skipping", "rev", revStr, "error", err)
+			continue
 		}
-
 		revName := getShortID(fullRevID)
 		for _, ref := range refs {
 			if revStr == git.RefShortName(ref.Refspec) || revStr == ref.Refspec {
@@ -771,13 +736,7 @@ func (c *RepoConfig) writeRepo() (*BranchOutput, error) {
 				break
 			}
 		}
-
-		data := &RevData{
-			id:     fullRevID,
-			name:   revName,
-			Config: c,
-		}
-
+		data := &RevData{fullRevID, revName, c}
 		if first == nil {
 			first = data
 		}
@@ -785,92 +744,75 @@ func (c *RepoConfig) writeRepo() (*BranchOutput, error) {
 	}
 
 	if first == nil {
-		err := tracerr.New("could not find a git reference that matches criteria")
-		c.Logger.Error(err.Error())
-		return nil, err
+		return tracerr.New("no valid git references found to process")
 	}
 
-	refInfoMap := map[string]*RefInfo{}
+	refInfoMap := make(map[string]*RefInfo)
 	for _, revData := range revs {
-		refInfoMap[revData.Name()] = &RefInfo{
-			ID:      revData.ID(),
-			Refspec: revData.Name(),
-			URL:     revData.TreeURL(),
-		}
+		refInfoMap[revData.Name()] = &RefInfo{revData.ID(), revData.Name(), revData.TreeURL()}
 	}
-
 	for _, ref := range refs {
 		refspec := git.RefShortName(ref.Refspec)
-		if refInfoMap[refspec] != nil {
-			continue
-		}
-
-		refInfoMap[refspec] = &RefInfo{
-			ID:      ref.ID,
-			Refspec: refspec,
+		if _, exists := refInfoMap[refspec]; !exists {
+			refInfoMap[refspec] = &RefInfo{ID: ref.ID, Refspec: refspec}
 		}
 	}
 
-	refInfoList := []*RefInfo{}
+	refInfoList := make([]*RefInfo, 0, len(refInfoMap))
 	for _, val := range refInfoMap {
 		refInfoList = append(refInfoList, val)
 	}
 	sort.Slice(refInfoList, func(i, j int) bool {
-		urlI := refInfoList[i].URL
-		urlJ := refInfoList[j].URL
-		refI := refInfoList[i].Refspec
-		refJ := refInfoList[j].Refspec
-		if urlI == urlJ {
-			return refI < refJ
+		if refInfoList[i].URL != refInfoList[j].URL {
+			return refInfoList[i].URL > refInfoList[j].URL
 		}
-		return urlI > urlJ
+		return refInfoList[i].Refspec < refInfoList[j].Refspec
 	})
 
-	mainOutput := &BranchOutput{}
+	var mainReadme template.HTML
+	var searchIndex []*SearchIndexEntry
+	var langFiles = make(map[string][]*SearchIndexEntry)
+	var searchIndexMutex sync.Mutex
+	var langFilesMutex sync.Mutex
 	var wg sync.WaitGroup
-	for i, revData := range revs {
-		c.Logger.Info("writing revision", "revision", revData.Name())
-		data := &PageData{
-			Repo:     c,
-			RevData:  revData,
-			SiteURLs: c.getURLs(),
-		}
 
-		if i == 0 {
-			branchOutput, err := c.writeRevision(repo, data, refInfoList)
+	for i, revData := range revs {
+		pageData := &PageData{c, c.getURLs(), revData}
+		isFirst := i == 0
+		wg.Add(1)
+		go func(d *PageData, firstRev bool) {
+			defer wg.Done()
+			readme, sIndex, lFiles, err := c.writeRevision(repo, d, refInfoList)
 			if err != nil {
-				c.Logger.Error("failed to write main revision", "rev", revData.Name(), "error", err)
-				return nil, tracerr.Errorf("%v", err)
+				c.Logger.Error("failed to write revision", "rev", d.RevData.Name(), "error", err)
+				return
 			}
-			mainOutput = branchOutput
-		} else {
-			wg.Add(1)
-			go func(d *PageData) {
-				defer wg.Done()
-				if _, err := c.writeRevision(repo, d, refInfoList); err != nil {
-					c.Logger.Error("failed to write revision", "rev", d.RevData.Name(), "error", err)
+			if firstRev {
+				mainReadme = readme
+				searchIndexMutex.Lock()
+				searchIndex = append(searchIndex, sIndex...)
+				searchIndexMutex.Unlock()
+				langFilesMutex.Lock()
+				for lang, files := range lFiles {
+					langFiles[lang] = append(langFiles[lang], files...)
 				}
-			}(data)
-		}
+				langFilesMutex.Unlock()
+			}
+		}(pageData, isFirst)
 	}
 	wg.Wait()
 
-	revData := &RevData{
-		id:     first.ID(),
-		name:   first.Name(),
-		Config: c,
+	pageData := &PageData{c, c.getURLs(), first}
+	c.writeRefs(pageData, refInfoList)
+	c.writeSearchIndex(searchIndex)
+	c.writeSearchPage(pageData)
+	for lang, files := range langFiles {
+		c.writeLanguagePage(pageData, lang, files)
 	}
-
-	data := &PageData{
-		RevData:  revData,
-		Repo:     c,
-		SiteURLs: c.getURLs(),
-	}
-	c.writeRefs(data, refInfoList)
 
 	langStats, totalSize := calculateLanguageStats(repo, first.id, c)
-	c.writeRootSummary(data, template.HTML(mainOutput.Readme), langStats, totalSize)
-	return mainOutput, nil
+	c.writeRootSummary(pageData, mainReadme, langStats, totalSize)
+	return nil
 }
 
 type TreeRoot struct {
@@ -880,13 +822,13 @@ type TreeRoot struct {
 }
 
 type TreeWalker struct {
-	treeItem           chan *TreeItem
-	tree               chan *TreeRoot
-	HideTreeLastCommit bool
-	PageData           *PageData
-	Repo               *git.Repository
-	Config             *RepoConfig
-	errChan            chan error
+	treeItemChan chan *TreeItem
+	treeRootChan chan *TreeRoot
+	errChan      chan error
+	wg           sync.WaitGroup
+	PageData     *PageData
+	Repo         *git.Repository
+	Config       *RepoConfig
 }
 
 type Breadcrumb struct {
@@ -897,90 +839,44 @@ type Breadcrumb struct {
 
 func (tw *TreeWalker) calcBreadcrumbs(curpath string) []*Breadcrumb {
 	if curpath == "" {
-		return []*Breadcrumb{}
+		return nil
 	}
 	parts := strings.Split(curpath, string(os.PathSeparator))
-	rootURL := tw.Config.compileURL(
-		getTreeBaseDir(tw.PageData.RevData),
-		"index.html",
-	)
-
 	crumbs := make([]*Breadcrumb, len(parts)+1)
 	crumbs[0] = &Breadcrumb{
-		URL:  rootURL,
+		URL:  tw.Config.getTreeURL(tw.PageData.RevData),
 		Text: tw.PageData.Repo.RepoName,
 	}
-
-	cur := ""
-	for idx, d := range parts {
-		crumb := filepath.Join(getFileBaseDir(tw.PageData.RevData), cur, d)
-		crumbUrl := tw.Config.compileURL(crumb, "index.html")
-		crumbs[idx+1] = &Breadcrumb{
-			Text: d,
-			URL:  crumbUrl,
+	for i, part := range parts {
+		currentCrumbPath := filepath.Join(parts[:i+1]...)
+		crumbs[i+1] = &Breadcrumb{
+			Text:   part,
+			URL:    tw.Config.compileURL(getFileBaseDir(tw.PageData.RevData), currentCrumbPath, "index.html"),
+			IsLast: i == len(parts)-1,
 		}
-		if idx == len(parts)-1 {
-			crumbs[idx+1].IsLast = true
-		}
-		cur = filepath.Join(cur, d)
 	}
-
 	return crumbs
 }
 
-func filenameToDevIcon(filename string) string {
-	ext := filepath.Ext(filename)
-	extMappr := map[string]string{
-		".html": "html5",
-		".go":   "go",
-		".py":   "python",
-		".css":  "css3",
-		".js":   "javascript",
-		".md":   "markdown",
-		".ts":   "typescript",
-		".tsx":  "react",
-		".jsx":  "react",
-	}
-
-	nameMappr := map[string]string{
-		"Makefile":   "cmake",
-		"Dockerfile": "docker",
-	}
-
-	icon := extMappr[ext]
-	if icon == "" {
-		icon = nameMappr[filename]
-	}
-	if icon == "" {
-		return ""
-	}
-
-	return fmt.Sprintf("devicon-%s-original", icon)
-}
-
-func (tw *TreeWalker) NewTreeItem(entry *git.TreeEntry, curpath string, crumbs []*Breadcrumb) (*TreeItem, error) {
-	typ := entry.Type()
+func (tw *TreeWalker) newTreeItem(entry *git.TreeEntry, curpath string, crumbs []*Breadcrumb) (*TreeItem, error) {
 	fname := filepath.Join(curpath, entry.Name())
 	item := &TreeItem{
 		Size:   toPretty(entry.Size()),
 		Name:   entry.Name(),
 		Path:   fname,
 		Entry:  entry,
-		URL:    tw.Config.getFileURL(tw.PageData.RevData, fname),
 		Crumbs: crumbs,
+		IsDir:  entry.Type() == git.ObjectTree,
 	}
 
-	if !tw.HideTreeLastCommit {
-		id := tw.PageData.RevData.ID()
-		lastCommits, err := tw.Repo.RevList([]string{id}, git.RevListOptions{
+	if !tw.Config.HideTreeLastCommit {
+		lastCommits, err := tw.Repo.RevList([]string{tw.PageData.RevData.ID()}, git.RevListOptions{
 			Path:           item.Path,
 			CommandOptions: git.CommandOptions{Args: []string{"-1"}},
 		})
 		if err != nil {
-			tw.Config.Logger.Error("failed to get last commit for file", "path", item.Path, "error", err)
-			return nil, tracerr.Errorf("%v", err)
+			return nil, tracerr.Errorf("failed to get last commit for %s: %w", item.Path, err)
 		}
-
 		if len(lastCommits) > 0 {
 			lc := lastCommits[0]
 			item.CommitURL = tw.Config.getCommitURL(lc.ID.String())
@@ -991,221 +887,198 @@ func (tw *TreeWalker) NewTreeItem(entry *git.TreeEntry, curpath string, crumbs [
 		}
 	}
 
-	fpath := tw.Config.getFileURL(tw.PageData.RevData, fmt.Sprintf("%s.html", fname))
-	switch typ {
-	case git.ObjectTree:
-		item.IsDir = true
-		fpath = tw.Config.compileURL(
-			filepath.Join(
-				getFileBaseDir(tw.PageData.RevData),
-				curpath,
-				entry.Name(),
-			),
-			"index.html",
-		)
-	case git.ObjectBlob:
-		item.Icon = filenameToDevIcon(item.Name)
+	if item.IsDir {
+		item.URL = tw.Config.compileURL(getFileBaseDir(tw.PageData.RevData), fname, "index.html")
+	} else {
+		item.URL = tw.Config.getFileURL(tw.PageData.RevData, fname)
 	}
-	item.URL = fpath
-
 	return item, nil
 }
 
 func (tw *TreeWalker) walk(tree *git.Tree, curpath string) {
-	defer func() {
-		if curpath == "" {
-			close(tw.tree)
-			close(tw.treeItem)
-		}
-	}()
+	defer tw.wg.Done()
 
 	entries, err := tree.Entries()
 	if err != nil {
-		tw.errChan <- tracerr.Errorf("%v", err)
+		tw.errChan <- err
 		return
 	}
 
 	crumbs := tw.calcBreadcrumbs(curpath)
-	treeEntries := []*TreeItem{}
+	var treeEntries []*TreeItem
 	for _, entry := range entries {
-		typ := entry.Type()
-		item, err := tw.NewTreeItem(entry, curpath, crumbs)
+		item, err := tw.newTreeItem(entry, curpath, crumbs)
 		if err != nil {
 			tw.errChan <- err
 			return
 		}
+		treeEntries = append(treeEntries, item)
 
-		switch typ {
-		case git.ObjectTree:
-			item.IsDir = true
-			re, _ := tree.Subtree(entry.Name())
-			tw.walk(re, item.Path)
-			treeEntries = append(treeEntries, item)
-			tw.treeItem <- item
-		case git.ObjectBlob:
-			treeEntries = append(treeEntries, item)
-			tw.treeItem <- item
+		if item.IsDir {
+			subTree, err := tree.Subtree(entry.Name())
+			if err != nil {
+				tw.errChan <- err
+				continue
+			}
+			tw.wg.Add(1)
+			go tw.walk(subTree, item.Path)
 		}
+		tw.treeItemChan <- item
 	}
 
 	sort.Slice(treeEntries, func(i, j int) bool {
-		nameI := treeEntries[i].Name
-		nameJ := treeEntries[j].Name
-		if treeEntries[i].IsDir && treeEntries[j].IsDir {
-			return nameI < nameJ
+		if treeEntries[i].IsDir != treeEntries[j].IsDir {
+			return treeEntries[i].IsDir
 		}
-		if treeEntries[i].IsDir && !treeEntries[j].IsDir {
-			return true
-		}
-		if !treeEntries[i].IsDir && treeEntries[j].IsDir {
-			return false
-		}
-		return nameI < nameJ
+		return treeEntries[i].Name < treeEntries[j].Name
 	})
 
-	fpath := filepath.Join(
-		getFileBaseDir(tw.PageData.RevData),
-		curpath,
-	)
-	if curpath == "" {
+	fpath := getFileBaseDir(tw.PageData.RevData)
+	if curpath != "" {
+		fpath = filepath.Join(fpath, curpath)
+	} else {
 		fpath = getTreeBaseDir(tw.PageData.RevData)
 	}
 
-	tw.tree <- &TreeRoot{
-		Path:   fpath,
-		Items:  treeEntries,
-		Crumbs: crumbs,
-	}
+	tw.treeRootChan <- &TreeRoot{Path: fpath, Items: treeEntries, Crumbs: crumbs}
 }
 
-func (c *RepoConfig) writeRevision(repo *git.Repository, pageData *PageData, refs []*RefInfo) (*BranchOutput, error) {
-	c.Logger.Info(
-		"compiling revision",
-		"repoName", c.RepoName,
-		"revision", pageData.RevData.Name(),
-	)
-
-	output := &BranchOutput{}
+func (c *RepoConfig) writeRevision(repo *git.Repository, pageData *PageData, refs []*RefInfo) (template.HTML, []*SearchIndexEntry, map[string][]*SearchIndexEntry, error) {
+	c.Logger.Info("compiling revision", "repoName", c.RepoName, "revision", pageData.RevData.Name())
 	var wg sync.WaitGroup
-	errChan := make(chan error, 10)
+	errChan := make(chan error, 20)
 
+	// Process commits
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-
-		pageSize := pageData.Repo.MaxCommits
+		pageSize := c.MaxCommits
 		if pageSize == 0 {
 			pageSize = 5000
 		}
 		commits, err := repo.CommitsByPage(pageData.RevData.ID(), 0, pageSize)
 		if err != nil {
-			c.Logger.Error("failed to get commits", "rev", pageData.RevData.ID(), "error", err)
-			errChan <- tracerr.Errorf("%v", err)
+			errChan <- tracerr.Errorf("failed to get commits for %s: %w", pageData.RevData.ID(), err)
 			return
 		}
 
-		logs := []*CommitData{}
-		for i, commit := range commits {
-			if i == 0 {
-				output.LastCommit = commit
-			}
-
-			tags := []*RefInfo{}
+		var logs []*CommitData
+		for _, commit := range commits {
+			var commitRefs []*RefInfo
 			for _, ref := range refs {
 				if commit.ID.String() == ref.ID {
-					tags = append(tags, ref)
+					commitRefs = append(commitRefs, ref)
 				}
 			}
-
 			parentSha, _ := commit.ParentID(0)
 			parentID := ""
-			if parentSha == nil {
-				parentID = commit.ID.String()
-			} else {
+			if parentSha != nil {
 				parentID = parentSha.String()
 			}
-			logs = append(logs, &CommitData{
-				ParentID:   parentID,
+
+			logEntry := &CommitData{
+				SummaryStr: commit.Summary(),
 				URL:        c.getCommitURL(commit.ID.String()),
 				ShortID:    getShortID(commit.ID.String()),
-				SummaryStr: commit.Summary(),
 				AuthorStr:  commit.Author.Name,
 				WhenStr:    commit.Author.When.Format(time.DateOnly),
 				Commit:     commit,
-				Refs:       tags,
-			})
-		}
+				Refs:       commitRefs,
+				ParentID:   parentID,
+			}
+			logs = append(logs, logEntry)
 
-		c.writeLog(pageData, logs)
-
-		for _, cm := range logs {
 			wg.Add(1)
-			go func(commit *CommitData) {
+			go func(cm *CommitData) {
 				defer wg.Done()
-				c.writeLogDiff(repo, pageData, commit)
-			}(cm)
+				c.writeLogDiff(repo, pageData, cm)
+			}(logEntry)
 		}
+		c.writeLog(pageData, logs)
 	}()
 
+	// Process tree
 	tree, err := repo.LsTree(pageData.RevData.ID())
 	if err != nil {
-		c.Logger.Error("failed to list tree", "rev", pageData.RevData.ID(), "error", err)
-		return nil, tracerr.Errorf("%v", err)
+		return "", nil, nil, tracerr.Errorf("failed to list tree for %s: %w", pageData.RevData.ID(), err)
 	}
 
-	readme := ""
-	entries := make(chan *TreeItem)
-	subtrees := make(chan *TreeRoot)
-	tw := &TreeWalker{
-		Config:   c,
-		PageData: pageData,
-		Repo:     repo,
-		treeItem: entries,
-		tree:     subtrees,
-		errChan:  errChan,
-	}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		tw.walk(tree, "")
-	}()
-
+	var readme template.HTML
 	var readmeMutex sync.Mutex
+	var searchIndex []*SearchIndexEntry
+	var langFiles = make(map[string][]*SearchIndexEntry)
+	var mu sync.Mutex
+
+	treeItemChan := make(chan *TreeItem, 100)
+	treeRootChan := make(chan *TreeRoot, 20)
+	tw := &TreeWalker{
+		Config:       c,
+		PageData:     pageData,
+		Repo:         repo,
+		treeItemChan: treeItemChan,
+		treeRootChan: treeRootChan,
+		errChan:      errChan,
+	}
+
+	tw.wg.Add(1)
+	go tw.walk(tree, "")
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for e := range entries {
-			wg.Add(1)
+		var fileWg sync.WaitGroup
+		for item := range treeItemChan {
+			if item.IsDir {
+				continue
+			}
+			fileWg.Add(1)
 			go func(entry *TreeItem) {
-				defer wg.Done()
-				if entry.IsDir {
-					return
-				}
-
-				readmeStr, _, _, err := c.writeHTMLTreeFile(pageData, entry)
+				defer fileWg.Done()
+				readmeStr, lang, _, err := c.writeHTMLTreeFile(pageData, entry)
 				if err != nil {
 					errChan <- err
 					return
 				}
 				if readmeStr != "" {
 					readmeMutex.Lock()
-					readme = readmeStr
+					readme = template.HTML(readmeStr)
 					readmeMutex.Unlock()
 				}
-			}(e)
+				fileInfo := &SearchIndexEntry{
+					Name:     entry.Name,
+					Path:     entry.Path,
+					URL:      string(entry.URL),
+					Language: lang,
+				}
+				mu.Lock()
+				searchIndex = append(searchIndex, fileInfo)
+				if lang != "Binary" && lang != "Text" {
+					langFiles[lang] = append(langFiles[lang], fileInfo)
+				}
+				mu.Unlock()
+			}(item)
 		}
+		fileWg.Wait()
 	}()
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for t := range subtrees {
-			wg.Add(1)
-			go func(tree *TreeRoot) {
-				defer wg.Done()
-				c.writeTree(pageData, tree)
+		var treeWg sync.WaitGroup
+		for t := range treeRootChan {
+			treeWg.Add(1)
+			go func(tr *TreeRoot) {
+				defer treeWg.Done()
+				c.writeTree(pageData, tr)
 			}(t)
 		}
+		treeWg.Wait()
+	}()
+
+	go func() {
+		tw.wg.Wait()
+		close(treeItemChan)
+		close(treeRootChan)
 	}()
 
 	go func() {
@@ -1219,19 +1092,14 @@ func (c *RepoConfig) writeRevision(repo *git.Repository, pageData *PageData, ref
 		} else {
 			c.Logger.Error("an error occurred during revision processing", "error", err)
 		}
-		return nil, err
+		return "", nil, nil, err
 	}
 
-	c.Logger.Info(
-		"compilation complete",
-		"repoName", c.RepoName,
-		"revision", pageData.RevData.Name(),
-	)
-
-	output.Readme = readme
-	return output, nil
+	c.Logger.Info("compilation complete", "repoName", c.RepoName, "revision", pageData.RevData.Name())
+	return readme, searchIndex, langFiles, nil
 }
 
+// Language Stats & Theme
 var langColors = map[string]string{
 	"Go":         "#00ADD8",
 	"C":          "#555555",
@@ -1248,6 +1116,7 @@ var langColors = map[string]string{
 	"JSON":       "#292929",
 	"YAML":       "#CB171E",
 	"B":          "#555555",
+	"Nim":        "#ffe953",
 }
 
 func getLanguageColor(lang string) string {
@@ -1258,8 +1127,7 @@ func getLanguageColor(lang string) string {
 	for _, char := range lang {
 		hash = int(char) + ((hash << 5) - hash)
 	}
-	color := (hash & 0x00FFFFFF)
-	return fmt.Sprintf("#%06x", color)
+	return fmt.Sprintf("#%06x", (hash&0x00FFFFFF))
 }
 
 func calculateLanguageStats(repo *git.Repository, rev string, config *RepoConfig) ([]*LanguageStat, int64) {
@@ -1270,40 +1138,46 @@ func calculateLanguageStats(repo *git.Repository, rev string, config *RepoConfig
 	}
 
 	langSizes := make(map[string]int64)
+	langHexColors := make(map[string]string)
 	var totalSize int64
+	var mu sync.Mutex
+	var wg sync.WaitGroup
 
 	var walkTree func(*git.Tree, string)
 	walkTree = func(t *git.Tree, currentPath string) {
-		entries, err := t.Entries()
-		if err != nil {
-			config.Logger.Error("failed to get tree entries for language stats", "error", err)
-			return
-		}
-
+		defer wg.Done()
+		entries, _ := t.Entries()
 		for _, entry := range entries {
+			fullPath := filepath.Join(currentPath, entry.Name())
 			if entry.Type() == git.ObjectBlob {
 				blob := entry.Blob()
-				data, err := blob.Bytes()
-				if err != nil {
-					continue
-				}
+				data, _ := blob.Bytes()
+				displayName, _, isText := config.getLanguageInfo(fullPath, data)
+				if isText && displayName != "Text" && displayName != "Binary" {
+					attrs := config.getFileAttributes(fullPath)
+					hexColor := attrs["linguist-hex-color"]
 
-				fullPath := filepath.Join(currentPath, entry.Name())
-				lang := config.getLanguageForStats(fullPath, data)
-				if lang != "" && lang != "Text" {
-					langSizes[lang] += blob.Size()
+					mu.Lock()
+					langSizes[displayName] += blob.Size()
 					totalSize += blob.Size()
+					if hexColor != "" {
+						langHexColors[displayName] = hexColor
+					}
+					mu.Unlock()
 				}
 			} else if entry.Type() == git.ObjectTree {
 				subTree, err := t.Subtree(entry.Name())
 				if err == nil {
-					walkTree(subTree, filepath.Join(currentPath, entry.Name()))
+					wg.Add(1)
+					go walkTree(subTree, fullPath)
 				}
 			}
 		}
 	}
 
+	wg.Add(1)
 	walkTree(tree, "")
+	wg.Wait()
 
 	if totalSize == 0 {
 		return nil, 0
@@ -1311,21 +1185,26 @@ func calculateLanguageStats(repo *git.Repository, rev string, config *RepoConfig
 
 	stats := make([]*LanguageStat, 0, len(langSizes))
 	for lang, size := range langSizes {
+		color := langHexColors[lang]
+		if color == "" {
+			color = getLanguageColor(lang)
+		}
+
 		stats = append(stats, &LanguageStat{
 			Name:       lang,
 			Percentage: (float64(size) / float64(totalSize)) * 100,
-			Color:      getLanguageColor(lang),
+			Color:      color,
+			URL:        config.compileURL(fmt.Sprintf("lang-%s.html", lang)),
 		})
 	}
 
 	sort.Slice(stats, func(i, j int) bool {
 		return stats[i].Percentage > stats[j].Percentage
 	})
-
 	return stats, totalSize
 }
 
-func style(theme chroma.Style) string {
+func generateThemeCSS(theme *chroma.Style) string {
 	bg := theme.Get(chroma.Background)
 	txt := theme.Get(chroma.Text)
 	kw := theme.Get(chroma.Keyword)
@@ -1333,97 +1212,51 @@ func style(theme chroma.Style) string {
 	cm := theme.Get(chroma.Comment)
 	ln := theme.Get(chroma.LiteralNumber)
 	return fmt.Sprintf(`:root {
-  --bg-color: %s;
-  --text-color: %s;
-  --border: %s;
-  --link-color: %s;
-  --hover: %s;
-  --visited: %s;
-}`,
-		bg.Background.String(),
-		txt.Colour.String(),
-		cm.Colour.String(),
-		nv.Colour.String(),
-		kw.Colour.String(),
-		ln.Colour.String(),
-	)
-}
-
-func isPortAvailable(port string, logger *slog.Logger) bool {
-	logger.Info("checking port availability", "port", port)
-	ln, err := net.Listen("tcp", ":"+port)
-	if err != nil {
-		logger.Warn("port is not available", "port", port, "error", err)
-		return false
-	}
-	_ = ln.Close()
-	logger.Info("port is available", "port", port)
-	return true
+ --bg-color: %s; --text-color: %s; --border: %s;
+ --link-color: %s; --hover: %s; --visited: %s;
+}`, bg.Background, txt.Colour, cm.Colour, nv.Colour, kw.Colour, ln.Colour)
 }
 
 type PgitConfig struct {
 	Repos []RepoConfig `yaml:"repos"`
 }
 
-func loadConfig(path string, logger *slog.Logger) (_ *PgitConfig, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = tracerr.Errorf("recovered from panic during YAML parsing: %v", r)
-		}
-	}()
-
-	logger.Info("Attempting to use configuration file", "path", path)
-
-	if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
-		return nil, tracerr.Errorf("config file %s does not exist: %w", path, statErr)
+func loadConfig(path string, logger *slog.Logger) (*PgitConfig, error) {
+	logger.Info("loading configuration file", "path", path)
+	yamlFile, err := os.ReadFile(path)
+	if err != nil {
+		return nil, tracerr.Errorf("error reading config file %s: %w", path, err)
 	}
-
-	yamlFile, readErr := os.ReadFile(path)
-	if readErr != nil {
-		return nil, tracerr.Errorf("error reading YAML file: %w", readErr)
-	}
-
 	var pgitConfig PgitConfig
-	unmarshalErr := yaml.Unmarshal(yamlFile, &pgitConfig)
-	if unmarshalErr != nil {
-		return nil, tracerr.Errorf("error parsing YAML file: %w", unmarshalErr)
+	if err := yaml.Unmarshal(yamlFile, &pgitConfig); err != nil {
+		return nil, tracerr.Errorf("error parsing YAML file: %w", err)
 	}
-
 	return &pgitConfig, nil
 }
 
 func main() {
-	formatter := html.New(
-		html.WithLineNumbers(true),
-		html.WithLinkableLineNumbers(true, ""),
-		html.WithClasses(true),
-	)
-
-	logger := slog.Default()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	slog.SetDefault(logger)
 
 	app := &cli.Command{
-		Name: "pgit",
+		Name:  "pgit",
+		Usage: "A static site generator for git repositories",
 		Flags: []cli.Flag{
-			&cli.StringFlag{
-				Name:  "config",
-				Value: "pgit.yaml",
-				Usage: "path to config file",
-			},
+			&cli.StringFlag{Name: "config", Value: "pgit.yaml", Usage: "Path to config file"},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			configFile := cmd.String("config")
-
-			pgitConfig, err := loadConfig(configFile, logger)
+			pgitConfig, err := loadConfig(cmd.String("config"), logger)
 			if err != nil {
 				return err
 			}
-
 			if len(pgitConfig.Repos) == 0 {
-				logger.Warn("No repositories found in the configuration file. Nothing to do.")
+				logger.Warn("no repositories found in configuration")
 				return nil
 			}
 
 			var wg sync.WaitGroup
+			formatter := html.New(html.WithLineNumbers(true), html.WithLinkableLineNumbers(true, ""), html.WithClasses(true))
+
 			for _, repoCfg := range pgitConfig.Repos {
 				wg.Add(1)
 				go func(config RepoConfig) {
@@ -1436,7 +1269,11 @@ func main() {
 						logger.Error("you must provide revs for repo", "repo", config.RepoPath)
 						return
 					}
-					config.Cache = make(map[string]bool)
+					if config.RenderMarkdown == nil {
+						t := true
+						config.RenderMarkdown = &t
+					}
+
 					config.Logger = logger
 					config.ChromaTheme = styles.Get(config.ThemeName)
 					if config.ChromaTheme == nil {
@@ -1444,7 +1281,7 @@ func main() {
 					}
 					config.Formatter = formatter
 
-					if _, err := config.writeRepo(); err != nil {
+					if err := config.writeRepo(); err != nil {
 						logger.Error("failed to write repo", "repo", config.RepoPath, "error", err)
 						if e, ok := err.(*tracerr.Error); ok {
 							e.Print()
@@ -1452,35 +1289,29 @@ func main() {
 						return
 					}
 
-					if err := config.copyStatic("static"); err != nil {
+					if err := config.copyStaticFiles(); err != nil {
 						logger.Error("failed to copy static files", "repo", config.RepoPath, "error", err)
 						return
 					}
 
-					stylesCss := style(*config.ChromaTheme)
-					if err := os.WriteFile(filepath.Join(config.Outdir, "vars.css"), []byte(stylesCss), 0644); err != nil {
+					if err := os.WriteFile(filepath.Join(config.Outdir, "vars.css"), []byte(generateThemeCSS(config.ChromaTheme)), 0644); err != nil {
 						logger.Error("failed to write vars.css", "repo", config.RepoPath, "error", err)
-						return
 					}
 
 					fp := filepath.Join(config.Outdir, "syntax.css")
-					w, err := os.OpenFile(fp, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
+					w, err := os.Create(fp)
 					if err != nil {
-						logger.Error("failed to open syntax.css for writing", "repo", config.RepoPath, "error", err)
+						logger.Error("failed to create syntax.css", "repo", config.RepoPath, "error", err)
 						return
 					}
 					defer w.Close()
 					if err = formatter.WriteCSS(w, config.ChromaTheme); err != nil {
 						logger.Error("failed to write syntax.css", "repo", config.RepoPath, "error", err)
-						return
 					}
-
-					url := filepath.Join("/", "index.html")
-					config.Logger.Info("root url", "url", url)
 				}(repoCfg)
 			}
 			wg.Wait()
-
+			logger.Info("all repositories processed successfully")
 			return nil
 		},
 	}
@@ -1492,38 +1323,5 @@ func main() {
 			logger.Error("application failed to run", "error", err)
 		}
 		os.Exit(1)
-	}
-
-	if strings.HasPrefix(os.Args[0], filepath.Join(os.TempDir(), "go-build")) || os.Getenv("PGIT_WEBSERVER") == "1" {
-		port := "1313"
-		outDir := "public"
-
-		if !isPortAvailable(port, logger) {
-			err := tracerr.Errorf("port %s is already in use", port)
-			err.Print()
-			os.Exit(1)
-		}
-
-		if err := os.Chdir(outDir); err != nil {
-			err := tracerr.Errorf("failed to change directory to %q: %v", outDir, err)
-			err.Print()
-			os.Exit(1)
-		}
-
-		server := &http.Server{
-			Addr: ":" + port,
-			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				logger.Info("request received", "method", r.Method, "url", r.URL.String())
-				http.FileServer(http.Dir(".")).ServeHTTP(w, r)
-			}),
-			ErrorLog: slog.NewLogLogger(logger.Handler(), slog.LevelError),
-		}
-
-		logger.Info("serving content", "directory", outDir, "port", port)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			err := tracerr.Errorf("http server failed: %v", err)
-			err.Print()
-			os.Exit(1)
-		}
 	}
 }
