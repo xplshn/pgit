@@ -1,6 +1,6 @@
 #!/bin/sh
 
-set -e
+set -ex
 
 PGIT_CONFIG="../pgit.yaml"
 WWW_DIR="./pub"
