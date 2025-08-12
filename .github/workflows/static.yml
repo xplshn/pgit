@@ -28,7 +28,7 @@ jobs:
       - name: Install Go n Git
         run: |
           apk update
-          apk add go git
+          apk add go git jq
 
       - name: Checkout GitHub repo
         uses: actions/checkout@v4
