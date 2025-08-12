@@ -25,10 +25,10 @@ jobs:
       image: alpine:latest
 
     steps:
-      - name: Install Hugo, Git, and the worst version of Tar
+      - name: Install Go n Git
         run: |
           apk update
-          apk add go
+          apk add go git
 
       - name: Checkout GitHub repo
         uses: actions/checkout@v4
@@ -42,8 +42,9 @@ jobs:
           git config --global --add safe.directory "${GITHUB_WORKSPACE}"
 
       - name: Generate the site
-        run: |
-          ./pgit.go
+        run: 
+          cd ./www
+          ./gen.sh
 
           ## Prepare git to commit changes
           #git config user.name '󰬭 [CI] '
