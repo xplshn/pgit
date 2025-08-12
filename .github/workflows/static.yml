@@ -43,6 +43,7 @@ jobs:
 
       - name: Generate the site
         run: 
+          ls
           cd ./www
           ls
           ./gen.sh
