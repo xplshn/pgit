@@ -1,14 +1,91 @@
 repos:
-  - out: ./public
-    repo: /home/anto/Documents/TrulyMine/gbc
-    revs:
-      - "HEAD"
+  - out: ./www/pub/gbc
+    repo: ./www/repos/gbc
+    revs: ["HEAD"]
     desc: "GBC - Go B Compiler"
     max-commits: 100
     readme: "README.md"
     hide-tree-last-commit: false
-    home-url: "https://gbc.xplshn.com.ar"
+    home-url: "https://git.xplshn.com.ar/gbc"
     clone-url: "https://github.com/xplshn/gbc.git"
-    root-relative: "/"
-    theme: "gruvbox-light"
+    root-relative: "/gbc/"
+    theme: "gruvbox-dark"
     label: "gbc"
+
+  - out: ./www/pub/dbin
+    repo: ./www/repos/dbin
+    revs: ["HEAD"]
+    desc: "📦 Poor man's package manager. +4164 statically linked binaries in the default repos (amd64/arm64/riscv)! The easy to use, easy to get, suckless software distribution system."
+    max-commits: 100
+    readme: "README.md"
+    hide-tree-last-commit: false
+    home-url: "https://git.xplshn.com.ar/dbin"
+    clone-url: "https://github.com/xplshn/dbin.git"
+    root-relative: "/dbin/"
+    theme: "gruvbox-light"
+    label: "dbin"
+
+  - out: ./www/pub/alicelinux
+    repo: ./www/repos/alicelinux
+    revs: ["HEAD"]
+    desc: "Personal fork of https://codeberg.org/emmett1/alicelinux"
+    max-commits: 100
+    readme: "README.md"
+    hide-tree-last-commit: false
+    home-url: "https://git.xplshn.com.ar/alicelinux"
+    clone-url: "https://github.com/xplshn/alicelinux.git"
+    root-relative: "/alicelinux/"
+    theme: "gruvbox-dark"
+    label: "alicelinux"
+
+  - out: ./www/pub/pelf
+    repo: ./www/repos/pelf
+    revs: ["HEAD"]
+    desc: "The AppBundle format and the AppBundle Creation Tool. Create truly portable single-file programs for Unix clones (Linux and friends), works in a simple & intuitive manner."
+    max-commits: 100
+    readme: "README.md"
+    hide-tree-last-commit: false
+    home-url: "https://git.xplshn.com.ar/pelf"
+    clone-url: "https://github.com/xplshn/pelf.git"
+    root-relative: "/pelf/"
+    theme: "gruvbox-light"
+    label: "pelf"
+
+  - out: ./www/pub/cbc
+    repo: ./www/repos/cbc
+    revs: ["HEAD"]
+    desc: "C B Compiler"
+    max-commits: 100
+    readme: "README.md"
+    hide-tree-last-commit: false
+    home-url: "https://git.xplshn.com.ar/cbc"
+    clone-url: "https://github.com/xplshn/cbc.git"
+    root-relative: "/cbc/"
+    theme: "gruvbox-dark"
+    label: "cbc"
+
+  - out: ./www/pub/eget2
+    repo: ./www/repos/eget2
+    revs: ["HEAD"]
+    desc: "A program fetcher that supports Github, Gitlab, Codeberg, GHCR, etc, it also supports extraction of .tar.{gz, zst, xz, flate, br, bz2, lz4, lz, mz, sz, s2, zz}, zip, 7zip, rar archives."
+    max-commits: 100
+    readme: "README.md"
+    hide-tree-last-commit: false
+    home-url: "https://git.xplshn.com.ar/eget2"
+    clone-url: "https://github.com/xplshn/eget2.git"
+    root-relative: "/eget2/"
+    theme: "gruvbox-light"
+    label: "eget2"
+
+  - out: ./www/pub/a-utils
+    repo: ./www/repos/a-utils
+    revs: ["HEAD"]
+    desc: "+19 Unix utilities re-imagined yet POSIX."
+    max-commits: 100
+    readme: "README.md"
+    hide-tree-last-commit: false
+    home-url: "https://git.xplshn.com.ar/a-utils"
+    clone-url: "https://github.com/xplshn/a-utils.git"
+    root-relative: "/a-utils/"
+    theme: "gruvbox-dark"
+    label: "a-utils"
