@@ -15,4 +15,4 @@ It will only generate a commit log and files for the provided revisions.
 - Has search bar (requires JS. The search bar will not be displayed on hosts that don't support JS.)
 - Has a config file
 
-##### See it in action at: git.xplshn.com.ar
+##### See it in action at: [git.xplshn.com.ar](https://git.xplshn.com.ar)
