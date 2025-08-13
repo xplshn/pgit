@@ -39,7 +39,7 @@ ok "Generating index.html..."
     li{margin:0.5em 0}
     p{margin:0;font-size:0.9em;color:#555}
     </style>'
-    printf '<h1>xplshn git</h1><ul>'
+    printf '<h1>git.xplshn.com.ar</h1><ul>'
     yq -r '.repos[] | .label + "|" + .desc' "$PGIT_CONFIG" |
     while IFS='|' read -r label desc; do
         printf '<li><a href="./%s/">%s</a><p>%s</p></li>\n' "$label" "$label" "$desc"
