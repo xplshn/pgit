@@ -91,7 +91,7 @@ repos:
     label: "a-utils"
 
   - out: ./pub/pgit
-    repo: ../
+    repo: ..
     revs: ["HEAD"]
     desc: "Improved static site generator for git repos"
     max-commits: 100
