@@ -6,7 +6,7 @@ repos:
     max-commits: 100
     readme: "README.md"
     hide-tree-last-commit: false
-    home-url: "https://git.xplshn.com.ar/gbc"
+    home-url: "https://git.xplshn.com.ar"
     clone-url: "https://github.com/xplshn/gbc.git"
     root-relative: "/gbc/"
     theme: "gruvbox-dark"
@@ -19,7 +19,7 @@ repos:
     max-commits: 100
     readme: "README.md"
     hide-tree-last-commit: false
-    home-url: "https://git.xplshn.com.ar/dbin"
+    home-url: "https://git.xplshn.com.ar"
     clone-url: "https://github.com/xplshn/dbin.git"
     root-relative: "/dbin/"
     theme: "gruvbox-light"
@@ -32,7 +32,7 @@ repos:
     max-commits: 100
     readme: "README.md"
     hide-tree-last-commit: false
-    home-url: "https://git.xplshn.com.ar/alicelinux"
+    home-url: "https://git.xplshn.com.ar"
     clone-url: "https://github.com/xplshn/alicelinux.git"
     root-relative: "/alicelinux/"
     theme: "gruvbox-dark"
@@ -45,7 +45,7 @@ repos:
     max-commits: 100
     readme: "README.md"
     hide-tree-last-commit: false
-    home-url: "https://git.xplshn.com.ar/pelf"
+    home-url: "https://git.xplshn.com.ar"
     clone-url: "https://github.com/xplshn/pelf.git"
     root-relative: "/pelf/"
     theme: "gruvbox-light"
@@ -58,7 +58,7 @@ repos:
     max-commits: 100
     readme: "README.md"
     hide-tree-last-commit: false
-    home-url: "https://git.xplshn.com.ar/cbc"
+    home-url: "https://git.xplshn.com.ar"
     clone-url: "https://github.com/xplshn/cbc.git"
     root-relative: "/cbc/"
     theme: "gruvbox-dark"
@@ -71,7 +71,7 @@ repos:
     max-commits: 100
     readme: "README.md"
     hide-tree-last-commit: false
-    home-url: "https://git.xplshn.com.ar/eget2"
+    home-url: "https://git.xplshn.com.ar"
     clone-url: "https://github.com/xplshn/eget2.git"
     root-relative: "/eget2/"
     theme: "gruvbox-light"
@@ -84,7 +84,7 @@ repos:
     max-commits: 100
     readme: "README.md"
     hide-tree-last-commit: false
-    home-url: "https://git.xplshn.com.ar/a-utils"
+    home-url: "https://git.xplshn.com.ar"
     clone-url: "https://github.com/xplshn/a-utils.git"
     root-relative: "/a-utils/"
     theme: "gruvbox-dark"
