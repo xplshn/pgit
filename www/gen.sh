@@ -15,6 +15,9 @@ mkdir -p "$REPOS_DIR" "$WWW_DIR"
 yq -r '.repos[] | .clone-url + " " + .label' "$PGIT_CONFIG" |
 while read -r url label; do
     dir="$REPOS_DIR/$label"
+    if [ "$dir" = ".." ]; then
+        continue
+    fi
     if [ -d "$dir/.git" ]; then
         wrn "Updating: $label"
         (cd "$dir" && git pull --ff-only)
