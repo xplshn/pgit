@@ -89,3 +89,16 @@ repos:
     root-relative: "/a-utils/"
     theme: "gruvbox-dark"
     label: "a-utils"
+
+  - out: ./pub/pgit
+    repo: ../
+    revs: ["HEAD"]
+    desc: "Improved static site generator for git repos"
+    max-commits: 100
+    readme: "README.md"
+    hide-tree-last-commit: false
+    home-url: "https://git.xplshn.com.ar"
+    clone-url: "https://github.com/xplshn/pgit.git"
+    root-relative: "/pgit/"
+    theme: "gruvbox-dark"
+    label: "pgit"
