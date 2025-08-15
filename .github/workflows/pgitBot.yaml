@@ -2,7 +2,6 @@ name: Run pgitBot
 
 on:
   workflow_dispatch:
-
   schedule:
     - cron: '*/10 * * * *'
 
@@ -11,14 +10,13 @@ permissions:
 
 jobs:
   deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
-
     container:
       image: alpine:latest
-
+    env:
+      PGIT_DB_ENCRYPTION_KEY: ${{ secrets.PGIT_DB_ENCRYPTION_KEY }}
+      PGIT_IMAP_USERNAME: ${{ secrets.PGIT_IMAP_USERNAME }}
+      PGIT_IMAP_PASSWORD: ${{ secrets.PGIT_IMAP_PASSWORD }}
     steps:
       - name: Install Go n Git
         run: |
@@ -33,10 +31,6 @@ jobs:
           fetch-depth: 1
 
       - name: Run pgitBot
-        env:
-          PGIT_DB_ENCRYPTION_KEY: ${{ secrets.PGIT_DB_ENCRYPTION_KEY }}
-          PGIT_IMAP_USERNAME: ${{ secrets.PGIT_IMAP_USERNAME }}
-          PGIT_IMAP_PASSWORD: ${{ secrets.PGIT_IMAP_PASSWORD }}
         run: |
           go run ./pgitBot/pgitBot.go --config ./pgitBot/pgitBot.yml
 
