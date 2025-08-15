@@ -1,0 +1,48 @@
+name: Run pgitBot
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    - cron: '*/10 * * * *'
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+
+    container:
+      image: alpine:latest
+
+    steps:
+      - name: Install Go n Git
+        run: |
+          apk update
+          apk add go git
+
+      - name: Checkout GitHub repo
+        uses: actions/checkout@v4
+        with:
+          ref: 'master'
+          submodules: 'true'
+          fetch-depth: 1
+
+      - name: Run pgitBot
+        env:
+          PGIT_IMAP_USERNAME: ${{ secrets.PGIT_IMAP_USERNAME }}
+          PGIT_IMAP_PASSWORD: ${{ secrets.PGIT_IMAP_PASSWORD }}
+          PGIT_DB_ENCRYPTION_KEY: ${{ secrets.PGIT_DB_ENCRYPTION_KEY }}
+        run: go run ./pgit/pgitBot/pgitBot.go --config ./pgit/pgitBot/pgitBot.yml
+
+      - name: Commit and push database changes
+        run: |
+          git config --global user.name '[CI] pgitBot'
+          git config --global user.email 'action@github.com'
+          git add pgit/pgitBot/gbc-issues.json
+          git commit -m "bot: Update issue database" || exit 0
+          git push

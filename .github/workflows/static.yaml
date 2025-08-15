@@ -1,0 +1,87 @@
+name: Generate static repos and deploy to git.xplshn.com.ar
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * *"
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+
+    container:
+      image: alpine:latest
+
+    steps:
+      - name: Install Go, Git, yq, and Tar
+        run: |
+          apk update
+          apk add go git yq tar
+
+      - name: Checkout GitHub repo
+        uses: actions/checkout@v4
+        with:
+          ref: 'master'
+          # We still need to initialize submodules for the first run or when the cache is invalid
+          submodules: 'true' 
+          fetch-depth: 1
+
+      # ⬇️ CACHING STEPS START HERE ⬇️
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          # Cache the Go mod dir
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          # unique key for the cache based on the go.sum file
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          # restore key as fallback
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Cache Submodule Repositories
+        uses: actions/cache@v4
+        with:
+          path: ./www/repos # cloned repos
+          # Create key based on .gitmodules
+          # key changes if modules are added/removed, the cache will be invalidated if that happens
+          key: ${{ runner.os }}-repos-${{ hashFiles('.gitmodules') }}
+          restore-keys: |
+            ${{ runner.os }}-repos-
+      
+      # ⬆️ CACHING STEPS END HERE ⬆️
+
+      - name: Configure Git safe.directory
+        run: |
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+
+      - name: Generate the site
+        run: |
+          cd ./www
+          ./gen.sh
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: "./www/pub"
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
