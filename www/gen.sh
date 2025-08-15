@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-PGIT_CONFIG=../pgit.yaml
+PGIT_CONFIG=../pgit.yml
 WWW_DIR=./pub
 REPOS_DIR=./repos
 INDEX_FILE="$WWW_DIR/index.html"
