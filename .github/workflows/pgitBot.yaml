@@ -38,6 +38,6 @@ jobs:
         run: |
           git config --global user.name '[CI] pgitBot'
           git config --global user.email 'action@github.com'
-          git add pgit/pgitBot/*-issues.json
+          git add ./pgitBot/*-issues.json
           git commit -m "pgitBot: Update issues database" || exit 0
           git push
