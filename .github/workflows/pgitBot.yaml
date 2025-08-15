@@ -33,10 +33,11 @@ jobs:
           fetch-depth: 1
 
       - name: Run pgitBot
+        env:
+          PGIT_DB_ENCRYPTION_KEY: ${{ secrets.PGIT_DB_ENCRYPTION_KEY }}
+          PGIT_IMAP_USERNAME: ${{ secrets.PGIT_IMAP_USERNAME }}
+          PGIT_IMAP_PASSWORD: ${{ secrets.PGIT_IMAP_PASSWORD }}
         run: |
-          export PGIT_DB_ENCRYPTION_KEY="${{ secrets.PGIT_DB_ENCRYPTION_KEY }}" \
-                 PGIT_IMAP_USERNAME="${{ secrets.PGIT_IMAP_USERNAME }}"         \
-                 PGIT_IMAP_PASSWORD="${{ secrets.PGIT_IMAP_PASSWORD }}"
           go run ./pgitBot/pgitBot.go --config ./pgitBot/pgitBot.yml
 
       - name: Commit and push database changes
