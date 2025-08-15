@@ -37,7 +37,7 @@ jobs:
           PGIT_IMAP_USERNAME: ${{ secrets.PGIT_IMAP_USERNAME }}
           PGIT_IMAP_PASSWORD: ${{ secrets.PGIT_IMAP_PASSWORD }}
           PGIT_DB_ENCRYPTION_KEY: ${{ secrets.PGIT_DB_ENCRYPTION_KEY }}
-        run: go run ./pgit/pgitBot/pgitBot.go --config ./pgit/pgitBot/pgitBot.yml
+        run: go run ./pgit/pgitBot/pgitBot.go --config ./pgitBot/pgitBot.yml
 
       - name: Commit and push database changes
         run: |
