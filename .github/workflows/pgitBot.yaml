@@ -11,25 +11,23 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    container:
-      image: alpine:latest
     env:
       PGIT_DB_ENCRYPTION_KEY: ${{ secrets.PGIT_DB_ENCRYPTION_KEY }}
       PGIT_IMAP_USERNAME: ${{ secrets.PGIT_IMAP_USERNAME }}
       PGIT_IMAP_PASSWORD: ${{ secrets.PGIT_IMAP_PASSWORD }}
 
     steps:
-      - name: Install Go and Git
-        run: |
-          apk update
-          apk add --no-cache go git
-
       - name: Checkout GitHub repo
         uses: actions/checkout@v4
         with:
           ref: 'master'
           submodules: 'true'
           fetch-depth: 1
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
 
       - name: Run pgitBot
         run: |
