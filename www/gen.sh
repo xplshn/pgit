@@ -1,5 +1,5 @@
 #!/bin/sh
-set -e
+set -ex
 
 PGIT_CONFIG=../pgit.yml
 WWW_DIR=./pub
