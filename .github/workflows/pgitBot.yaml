@@ -32,12 +32,13 @@ jobs:
           PGIT_IMAP_USERNAME: ${{ secrets.PGIT_IMAP_USERNAME }}
           PGIT_IMAP_PASSWORD: ${{ secrets.PGIT_IMAP_PASSWORD }}
         run: |
-          go run ./pgitBot/pgitBot.go --config ./pgitBot/pgitBot.yml
+          go run ./pgitBot.go --config ./pgitBot.yml
 
       - name: Commit and push database changes
         run: |
           git config --global user.name '[CI] pgitBot'
           git config --global user.email 'action@github.com'
+          mv ./*-issues.json ./pgitBot/
           git add ./pgitBot/*-issues.json
           git commit -m "pgitBot: Update issues database" || exit 0
           git push
