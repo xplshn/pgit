@@ -1,5 +1,6 @@
-pgit
+./pgit
+./pgitBot/pub
+./pgitBot/pgitBot
 *.swp
 *.log
-public/
 .*

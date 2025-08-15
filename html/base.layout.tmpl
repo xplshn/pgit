@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{{template "title" .}}</title>
     <meta name="description" content="{{.Repo.Desc}}">
-    <meta name="keywords" content="git, code, forge, repo, repository, {{.Repo.RepoName}}" />
+    <meta name="keywords" content="git, code, forge, repo, repository, {{.Repo.Label}}" />
 
     {{template "meta" .}}
 
@@ -20,6 +20,58 @@
     <main>{{template "content" .}}</main>
     <hr class="my" />
     <footer>{{template "footer" .}}</footer>
+
+    {{if .Repo.IssuesEnabled}}
+    <!-- New Issue Modal -->
+    <div id="new-issue-modal" class="modal" style="display:none;">
+      <div class="modal-content">
+        <span class="close-btn" data-modal="new-issue-modal">&times;</span>
+        <h3>Create New Issue</h3>
+        <input type="text" id="new-issue-title" placeholder="Title">
+        <textarea id="new-issue-body" placeholder="Leave a comment..."></textarea>
+        <div class="flex justify-end mt">
+            <button id="submit-new-issue-btn" class="btn">Submit new issue</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Generic Error Modal -->
+    <div id="error-modal" class="modal" style="display:none;">
+      <div class="modal-content">
+        <span class="close-btn" data-modal="error-modal">&times;</span>
+        <h3>Error</h3>
+        <p id="error-modal-message"></p>
+        <div class="flex justify-end mt">
+            <button class="btn close-btn" data-modal="error-modal">OK</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Confirmation Modal -->
+    <div id="confirm-modal" class="modal" style="display:none;">
+      <div class="modal-content">
+        <span class="close-btn" data-modal="confirm-modal">&times;</span>
+        <h3 id="confirm-modal-title">Confirmation</h3>
+        <p id="confirm-modal-message"></p>
+        <div class="flex justify-end mt">
+            <button id="confirm-modal-cancel-btn" class="btn btn-secondary" data-modal="confirm-modal">Cancel</button>
+            <button id="confirm-modal-ok-btn" class="btn">OK</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- This script block provides necessary data from Go to JavaScript -->
+    <script>
+      const PGB_REACTIONS = {
+      {{with .Repo.IssueDB}}{{range $key, $value := .Reactions}}
+          "{{$key}}": "{{$value}}",
+      {{end}}{{end}}
+      };
+      const PGB_EMAIL_ADDR = "{{with .Repo.IssueDB}}{{.IssuesEmail}}{{end}}";
+      const PGB_SUBJECT_TAG = "{{with .Repo.IssueDB}}{{.SubjectTag}}{{end}}";
+    </script>
+    <script src="{{.Repo.RootRelative}}pgit.js" defer></script>
+    {{end}}
     <script src="{{.Repo.RootRelative}}search.js" defer></script>
   </body>
 </html>

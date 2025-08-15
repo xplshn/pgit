@@ -1,0 +1,146 @@
+{{template "base" .}}
+
+{{define "title"}}#{{.Issue.ID}} {{.Issue.Title}} - {{.Repo.RepoName}}{{end}}
+{{define "meta"}}{{end}}
+
+{{define "content"}}
+<div class="issue-container">
+	<header class="issue-header">
+		<h1 class="text-xl text-transform-none">{{.Issue.Title}} <span class="font-grey-light">#{{.Issue.ID}}</span></h1>
+		<div class="issue-meta">
+            <div class="issue-meta-actions">
+			    <span class="issue-status issue-status-{{.Issue.StatusClass}}">{{.Issue.Status}}</span>
+                <div class="dropdown">
+                    <button class="btn btn-secondary dropdown-toggle">Mark as ▼</button>
+                    <div class="dropdown-menu">
+                        {{$issueID := .Issue.ID}}
+                        {{range $status, $class := .Repo.IssueDB.MarkAs}}
+                        <a href="#" class="dropdown-item mark-as-btn" data-issue-id="{{$issueID}}" data-status="{{$status}}">{{$status}}</a>
+                        {{end}}
+                    </div>
+                </div>
+            </div>
+			<address class="author-info font-grey-light">{{getAuthor .Issue.Author}} opened this issue on <time datetime="{{.Issue.CreatedAt.Format "2006-01-02T15:04:05Z07:00"}}">{{.Issue.CreatedAt.Format "Jan 2, 2006"}}</time></address>
+		</div>
+	</header>
+
+	<div class="timeline">
+		<article class="timeline-item" data-author="{{.Issue.Author}}" data-id="{{.Issue.ID}}" data-type="issue">
+			<div class="comment-box">
+				<header class="comment-header">
+					<address class="author"><strong>{{getAuthor .Issue.Author}}</strong> commented</address>
+					<div class="comment-actions">
+						<button class="action-btn" data-action="react" title="Add reaction">☺</button>
+						<button class="action-btn" data-action="quote" title="Quote reply">“</button>
+						<button class="action-btn" data-action="edit" title="Edit comment">✎</button>
+					</div>
+				</header>
+				<div class="comment-body md">
+					{{markdown .Issue.Body}}
+				</div>
+                <div class="original-markdown" style="display: none;">{{.Issue.Body}}</div>
+                {{if .Issue.History}}
+                <details class="comment-history">
+                    <summary>Edited</summary>
+                    <ul>
+                    {{range .Issue.History}}
+                        <li>
+                            <time>{{formatTime .Timestamp}}</time>
+                            <pre>{{.Body}}</pre>
+                        </li>
+                    {{end}}
+                    </ul>
+                </details>
+                {{end}}
+                {{$reactionMap := .Repo.IssueDB.Reactions}}
+                {{$groupedReactions := .Issue.GroupedReactions $reactionMap}}
+                {{if $groupedReactions}}
+				<footer class="comment-reactions">
+					{{range $groupedReactions}}
+                    <button class="reaction-badge" data-action="unreact" data-reaction-name="{{.Name}}" title="{{.AuthorString}} reacted with {{.Emoji}}">
+                        <span>{{.Emoji}}</span>
+                        <span class="count">{{.Count}}</span>
+                    </button>
+                    {{end}}
+				</footer>
+                {{end}}
+			</div>
+		</article>
+
+		{{range .Issue.Comments}}
+		<article class="timeline-item" data-author="{{.Author}}" data-id="{{.ID}}" data-type="comment">
+			<div class="comment-box">
+				<header class="comment-header">
+					<address class="author"><strong>{{getAuthor .Author}}</strong> commented</address>
+					<div class="comment-actions">
+						<button class="action-btn" data-action="react" title="Add reaction">☺</button>
+						<button class="action-btn" data-action="quote" title="Quote reply">“</button>
+						<button class="action-btn" data-action="edit" title="Edit comment">✎</button>
+					</div>
+				</header>
+				<div class="comment-body md">
+					{{markdown .Body}}
+				</div>
+                <div class="original-markdown" style="display: none;">{{.Body}}</div>
+				{{if .History}}
+                <details class="comment-history">
+                    <summary>Edited</summary>
+                    <ul>
+                    {{range .History}}
+                        <li>
+                            <time>{{formatTime .Timestamp}}</time>
+                            <pre>{{.Body}}</pre>
+                        </li>
+                    {{end}}
+                    </ul>
+                </details>
+                {{end}}
+				{{$reactionMap := $.Repo.IssueDB.Reactions}}
+                {{$groupedReactions := .GroupedReactions $reactionMap}}
+				{{if $groupedReactions}}
+				<footer class="comment-reactions">
+                    {{range $groupedReactions}}
+                    <button class="reaction-badge" data-action="unreact" data-reaction-name="{{.Name}}" title="{{.AuthorString}} reacted with {{.Emoji}}">
+                        <span>{{.Emoji}}</span>
+                        <span class="count">{{.Count}}</span>
+                    </button>
+                    {{end}}
+				</footer>
+                {{end}}
+			</div>
+		</article>
+		{{end}}
+
+		<section class="timeline-item" id="reply-container">
+			<div class="comment-box">
+				<header class="comment-header">
+					<span id="current-user-alias"></span>
+					<button id="alias-btn" class="action-btn" title="Set your alias">Alias</button>
+				</header>
+				<div id="composer-container">
+                    <form onsubmit="return false;">
+					    <textarea id="reply-textarea" placeholder="Leave a comment..."></textarea>
+					    <div class="flex justify-end mt">
+						    <button id="submit-comment-btn" class="btn">Comment</button>
+					    </div>
+                    </form>
+				</div>
+			</div>
+		</section>
+	</div>
+</div>
+
+<div id="alias-modal" class="modal" style="display:none;">
+	<div class="modal-content">
+		<span class="close-btn" data-modal="alias-modal">&times;</span>
+		<h3>Set Your Alias</h3>
+		<p>Set a persistent alias for your comments. An email will be sent to the pgitBot, telling it to not expose your email address and instead use your alias. You can do/undo this as many times as you'd like.</p>
+        <p class="text-sm font-grey-light mt">NOTE: A cookie will also be stored in your browser. It will be used to warn you when you try to take an action such as "Delete" on an comment that you didn't create. This saves work for the pgitBot.</p>
+		<input type="text" id="alias-input" placeholder="Enter your alias (leave empty to unalias)">
+		<button id="save-alias-btn" class="btn mt">Save Alias</button>
+	</div>
+</div>
+
+<div id="reaction-picker" style="display:none; position:absolute;">
+</div>
+{{end}}

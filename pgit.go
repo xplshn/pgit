@@ -5,13 +5,20 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -38,38 +45,150 @@ var embedFS embed.FS
 //go:embed static/*
 var staticFS embed.FS
 
-var md = goldmark.New(
-	goldmark.WithExtensions(extension.GFM),
-	goldmark.WithParserOptions(
-		parser.WithAutoHeadingID(),
-	),
-	goldmark.WithRendererOptions(
-		gmdhtml.WithHardWraps(),
-		gmdhtml.WithXHTML(),
-		gmdhtml.WithUnsafe(),
-	),
+var (
+	md = goldmark.New(
+		goldmark.WithExtensions(extension.GFM),
+		goldmark.WithParserOptions(
+			parser.WithAutoHeadingID(),
+		),
+		goldmark.WithRendererOptions(
+			gmdhtml.WithHardWraps(),
+			gmdhtml.WithXHTML(),
+			gmdhtml.WithUnsafe(),
+		),
+	)
+	errDBEncrypt = errors.New("database encryption error")
+	errDBDecrypt = errors.New("database decryption error")
 )
 
-// Structs
+type EditRecord struct {
+	Timestamp time.Time `json:"timestamp"`
+	Body      string    `json:"body"`
+}
+
+type IssueReaction struct {
+	Emoji  string `json:"emoji"`
+	Author string `json:"author"`
+}
+
+type IssueComment struct {
+	ID        int             `json:"id"`
+	Author    string          `json:"author"`
+	Body      string          `json:"body"`
+	CreatedAt time.Time       `json:"createdAt"`
+	Reactions []IssueReaction `json:"reactions"`
+	History   []EditRecord    `json:"history,omitempty"`
+}
+
+type Issue struct {
+	ID          int             `json:"id"`
+	Title       string          `json:"title"`
+	Author      string          `json:"author"`
+	Body        string          `json:"body"`
+	CreatedAt   time.Time       `json:"createdAt"`
+	Comments    []IssueComment  `json:"comments"`
+	Reactions   []IssueReaction `json:"reactions"`
+	History     []EditRecord    `json:"history,omitempty"`
+	IsClosed    bool            `json:"isClosed"`
+	Status      string          `json:"status"`
+	StatusClass string          `json:"statusClass"`
+	URL         template.URL
+}
+
+type GroupedReaction struct {
+	Emoji        string
+	Name         string
+	Count        int
+	AuthorString string
+}
+
+func groupReactions(reactions []IssueReaction, reactionMap map[string]string) []GroupedReaction {
+	if len(reactions) == 0 {
+		return nil
+	}
+	emojiToName := make(map[string]string, len(reactionMap))
+	for name, emoji := range reactionMap {
+		emojiToName[emoji] = name
+	}
+
+	grouped := make(map[string][]string)
+	for _, r := range reactions {
+		grouped[r.Emoji] = append(grouped[r.Emoji], r.Author)
+	}
+	result := make([]GroupedReaction, 0, len(grouped))
+	for emoji, authors := range grouped {
+		result = append(result, GroupedReaction{
+			Emoji:        emoji,
+			Name:         emojiToName[emoji],
+			Count:        len(authors),
+			AuthorString: strings.Join(authors, ", "),
+		})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Count != result[j].Count {
+			return result[i].Count > result[j].Count
+		}
+		return result[i].Emoji < result[j].Emoji
+	})
+	return result
+}
+
+func (i *Issue) GroupedReactions(reactionMap map[string]string) []GroupedReaction {
+	return groupReactions(i.Reactions, reactionMap)
+}
+
+func (c *IssueComment) GroupedReactions(reactionMap map[string]string) []GroupedReaction {
+	return groupReactions(c.Reactions, reactionMap)
+}
+
+type IssueDatabase struct {
+	Issues        map[int]*Issue    `json:"issues"`
+	NextIssueID   int               `json:"nextIssueId"`
+	NextCommentID int               `json:"nextCommentId"`
+	RepoName      string            `json:"repoName"`
+	Reactions     map[string]string `json:"reactions"`
+	MarkAs        map[string]string `json:"mark_as"`
+	IssuesEmail   string            `json:"issuesEmail"`
+	SubjectTag    string            `json:"subjectTag"`
+}
+
+type GlobalIssueDatabase struct {
+	Repos        map[string]*IssueDatabase `json:"repos"`
+	EmailToAlias map[string]string         `json:"emailToAlias"`
+}
+
+type LanguageStat struct {
+	Name       string
+	Percentage float64
+	Color      string
+	URL        template.URL
+}
+
 type GitAttribute struct {
 	Pattern    string
 	Attributes map[string]string
 }
 
 type RepoConfig struct {
-	Outdir             string `yaml:"out"`
-	RepoPath           string `yaml:"repo"`
-	Revs               []string `yaml:"revs"`
-	Desc               string `yaml:"desc"`
-	MaxCommits         int    `yaml:"max-commits"`
-	Readme             string `yaml:"readme"`
-	HideTreeLastCommit bool   `yaml:"hide-tree-last-commit"`
-	HomeURL            string `yaml:"home-url"`
-	CloneURL           string `yaml:"clone-url"`
-	RootRelative       string `yaml:"root-relative"`
-	ThemeName          string `yaml:"theme"`
-	Label              string `yaml:"label"`
-	RenderMarkdown     *bool  `yaml:"renderMarkdown"`
+	Outdir             string
+	RepoPath           string
+	Revs               []string
+	Desc               string
+	MaxCommits         int
+	Readme             string
+	HideTreeLastCommit bool
+	HomeURL            string
+	CloneURL           string
+	RootRelative       string
+	ThemeName          string
+	Label              string
+	RenderMarkdown     *bool
+	IssuesDBPath       string
+	IssuesKey          string
+	DisableEncryption  bool
+	IssuesEnabled      bool
+	IssueDB            *IssueDatabase
+	AliasMap           map[string]string
 	Cache              sync.Map
 	RepoName           string
 	Logger             *slog.Logger
@@ -78,6 +197,30 @@ type RepoConfig struct {
 	GitAttributes      []GitAttribute
 	Whitelist          map[string]bool `yaml:"-"`
 	Blacklist          map[string]bool `yaml:"-"`
+}
+
+type PgitRepoConfig struct {
+	Outdir             *string  `yaml:"out"`
+	RepoPath           string   `yaml:"repo"`
+	Revs               []string `yaml:"revs"`
+	Desc               *string  `yaml:"desc"`
+	MaxCommits         *int     `yaml:"max-commits"`
+	Readme             *string  `yaml:"readme"`
+	HideTreeLastCommit *bool    `yaml:"hide-tree-last-commit"`
+	HomeURL            *string  `yaml:"home-url"`
+	CloneURL           *string  `yaml:"clone-url"`
+	RootRelative       *string  `yaml:"root-relative"`
+	ThemeName          *string  `yaml:"theme"`
+	Label              *string  `yaml:"label"`
+	RenderMarkdown     *bool    `yaml:"renderMarkdown"`
+	IssuesDBPath       *string  `yaml:"issues-db"`
+	IssuesKey          *string  `yaml:"issues-key"`
+	DisableEncryption  *bool    `yaml:"disable-encryption"`
+}
+
+type PgitConfig struct {
+	Global PgitRepoConfig            `yaml:"global"`
+	Repos  map[string]PgitRepoConfig `yaml:"repos"`
 }
 
 type RevInfo interface {
@@ -93,8 +236,12 @@ type RevData struct {
 
 func (r *RevData) ID() string   { return r.id }
 func (r *RevData) Name() string { return r.name }
-func (r *RevData) TreeURL() template.URL { return r.Config.getTreeURL(r) }
-func (r *RevData) LogURL() template.URL  { return r.Config.getLogsURL(r) }
+func (r *RevData) TreeURL() template.URL {
+	return r.Config.getTreeURL(r)
+}
+func (r *RevData) LogURL() template.URL {
+	return r.Config.getLogsURL(r)
+}
 
 type CommitData struct {
 	SummaryStr string
@@ -163,12 +310,14 @@ type SiteURLs struct {
 	SummaryURL template.URL
 	RefsURL    template.URL
 	SearchURL  template.URL
+	IssuesURL  template.URL
 }
 
 type PageData struct {
 	Repo     *RepoConfig
 	SiteURLs *SiteURLs
 	RevData  *RevData
+	AliasMap map[string]string
 }
 
 type SummaryPageData struct {
@@ -176,13 +325,6 @@ type SummaryPageData struct {
 	Readme        template.HTML
 	LanguageStats []*LanguageStat
 	TotalLanguage int64
-}
-
-type LanguageStat struct {
-	Name       string
-	Percentage float64
-	Color      string
-	URL        template.URL
 }
 
 type LanguagePageData struct {
@@ -225,6 +367,16 @@ type RefPageData struct {
 	Refs []*RefInfo
 }
 
+type IssuesListPageData struct {
+	*PageData
+	Issues []*Issue
+}
+
+type SingleIssuePageData struct {
+	*PageData
+	Issue *Issue
+}
+
 type WriteData struct {
 	Template string
 	Filename string
@@ -232,7 +384,6 @@ type WriteData struct {
 	Data     any
 }
 
-// Helper Functions
 func (c *RepoConfig) getFileAttributes(filename string) map[string]string {
 	var lastMatch *GitAttribute
 
@@ -241,22 +392,18 @@ func (c *RepoConfig) getFileAttributes(filename string) map[string]string {
 		pattern := attr.Pattern
 		matched := false
 
-		// Handle **/<pattern> by matching against the base name.
-		// This is a simplification but covers the most common use case.
 		if strings.HasPrefix(pattern, "**/") {
 			suffixPattern := strings.TrimPrefix(pattern, "**/")
 			if m, _ := filepath.Match(suffixPattern, filepath.Base(filename)); m {
 				matched = true
 			}
 		} else {
-			// Standard glob matching against the full path.
 			if m, _ := filepath.Match(pattern, filename); m {
 				matched = true
 			}
 		}
 
 		if matched {
-			// Keep overwriting with the last match found, as this is how .gitattributes works.
 			lastMatch = attr
 		}
 	}
@@ -275,18 +422,15 @@ func (c *RepoConfig) getLanguageInfo(filename string, data []byte) (displayName 
 
 	lexerNameForLookup := ""
 
-	// An explicit language override in .gitattributes is the highest priority for lexer selection.
 	if langOverride != "" {
 		lexerNameForLookup = langOverride
 	} else {
-		// If no override, proceed with detection.
 		detectedLexer := lexers.Match(filename)
 		if detectedLexer == nil && len(data) > 0 {
 			detectedLexer = lexers.Analyse(string(data))
 		}
 		if detectedLexer != nil {
 			lexerName := detectedLexer.Config().Name
-			// Apply blacklist/whitelist to detected languages.
 			isWhitelisted := c.Whitelist == nil || c.Whitelist[lexerName]
 			isBlacklisted := c.Blacklist != nil && c.Blacklist[lexerName]
 			if isWhitelisted && !isBlacklisted {
@@ -299,17 +443,14 @@ func (c *RepoConfig) getLanguageInfo(filename string, data []byte) (displayName 
 		lexer = lexers.Get(lexerNameForLookup)
 	}
 
-	// Determine the display name. `linguist-display-name` has the highest priority.
 	if displayOverride != "" {
 		displayName = displayOverride
 	} else if lexer != nil {
 		displayName = lexer.Config().Name
 	} else if langOverride != "" {
-		// Fallback for unknown languages specified in .gitattributes
 		displayName = langOverride
 	}
 
-	// Determine file type and set final fallbacks.
 	if data != nil && bytes.Contains(data, []byte{0}) {
 		isText = false
 		if displayName == "" {
@@ -339,12 +480,12 @@ func (c *RepoConfig) highlightSyntax(text, filename string, blob *git.Blob) (tem
 
 	iterator, err := lexer.Tokenise(nil, text)
 	if err != nil {
-		return template.HTML(text), displayName, tracerr.Errorf("tokenization failed: %w", err)
+		return template.HTML(text), displayName, tracerr.Wrapf(err, "tokenization failed")
 	}
 
 	var buf bytes.Buffer
 	if err := c.Formatter.Format(&buf, c.ChromaTheme, iterator); err != nil {
-		return template.HTML(text), displayName, tracerr.Errorf("formatting failed: %w", err)
+		return template.HTML(text), displayName, tracerr.Wrapf(err, "formatting failed")
 	}
 	return template.HTML(buf.String()), displayName, nil
 }
@@ -364,8 +505,10 @@ func diffFileType(t git.DiffFileType) string {
 	}
 }
 
-func toPretty(b int64) string { return humanize.Bytes(uint64(b)) }
-func repoName(root string) string { return filepath.Base(root) }
+func toPretty(b int64) string {
+	return humanize.Bytes(uint64(b))
+}
+
 func readmeFile(repo *RepoConfig) string {
 	if repo.Readme == "" {
 		return "readme.md"
@@ -373,19 +516,68 @@ func readmeFile(repo *RepoConfig) string {
 	return strings.ToLower(repo.Readme)
 }
 
-// File Writing
 func (c *RepoConfig) executeTemplate(w *os.File, data *WriteData) error {
-	ts, err := template.ParseFS(embedFS, data.Template, "html/*.partial.tmpl", "html/base.layout.tmpl")
-	if err != nil {
-		return tracerr.Errorf("failed to parse template %s: %w", data.Template, err)
+	getPageData := func(data any) *PageData {
+		switch v := data.(type) {
+		case *SummaryPageData:
+			return v.PageData
+		case *LanguagePageData:
+			return v.PageData
+		case *TreePageData:
+			return v.PageData
+		case *LogPageData:
+			return v.PageData
+		case *FilePageData:
+			return v.PageData
+		case *CommitPageData:
+			return v.PageData
+		case *RefPageData:
+			return v.PageData
+		case *IssuesListPageData:
+			return v.PageData
+		case *SingleIssuePageData:
+			return v.PageData
+		default:
+			return nil
+		}
 	}
-	return ts.Execute(w, data.Data)
+
+	ts, err := template.New(filepath.Base(data.Template)).Funcs(template.FuncMap{
+		"markdown": func(s string) template.HTML {
+			var buf bytes.Buffer
+			if err := md.Convert([]byte(s), &buf); err != nil {
+				c.Logger.Error("markdown conversion failed", "error", err)
+				return template.HTML(fmt.Sprintf("<pre>markdown error: %v</pre>", err))
+			}
+			return template.HTML(buf.String())
+		},
+		"getAuthor": func(email string) string {
+			pdata := getPageData(data.Data)
+			if pdata != nil && pdata.AliasMap != nil {
+				if alias, ok := pdata.AliasMap[email]; ok && alias != "" {
+					return alias
+				}
+			}
+			user, _, _ := strings.Cut(email, "@")
+			if user == "" {
+				return "anonymous"
+			}
+			return user
+		},
+		"formatTime": func(t time.Time) string {
+			return t.Format("Jan 2, 2006 at 15:04 MST")
+		},
+	}).ParseFS(embedFS, data.Template, "html/*.partial.tmpl", "html/base.layout.tmpl")
+	if err != nil {
+		return tracerr.Wrapf(err, "failed to parse template %s", data.Template)
+	}
+	return ts.ExecuteTemplate(w, "base", data.Data)
 }
 
 func (c *RepoConfig) writeHTML(data *WriteData) error {
 	dir := filepath.Join(c.Outdir, data.Subdir)
 	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
-		return tracerr.Errorf("failed to create directory %s: %w", dir, err)
+		return tracerr.Wrapf(err, "failed to create directory %s", dir)
 	}
 
 	fp := filepath.Join(dir, data.Filename)
@@ -393,7 +585,7 @@ func (c *RepoConfig) writeHTML(data *WriteData) error {
 
 	w, err := os.Create(fp)
 	if err != nil {
-		return tracerr.Errorf("failed to create file %s: %w", fp, err)
+		return tracerr.Wrapf(err, "failed to create file %s", fp)
 	}
 	defer w.Close()
 
@@ -407,7 +599,7 @@ func (c *RepoConfig) writeHTML(data *WriteData) error {
 func (c *RepoConfig) copyStaticFiles() error {
 	files, err := staticFS.ReadDir("static")
 	if err != nil {
-		return tracerr.Errorf("failed to read static dir: %w", err)
+		return tracerr.Wrapf(err, "failed to read static dir")
 	}
 	for _, file := range files {
 		if file.IsDir() {
@@ -417,11 +609,11 @@ func (c *RepoConfig) copyStaticFiles() error {
 		destPath := filepath.Join(c.Outdir, file.Name())
 		content, err := staticFS.ReadFile(srcPath)
 		if err != nil {
-			return tracerr.Errorf("failed to read static file %s: %w", srcPath, err)
+			return tracerr.Wrapf(err, "failed to read static file %s", srcPath)
 		}
 		c.Logger.Info("writing static file", "filepath", destPath)
 		if err := os.WriteFile(destPath, content, 0644); err != nil {
-			return tracerr.Errorf("failed to write static file %s: %w", destPath, err)
+			return tracerr.Wrapf(err, "failed to write static file %s", destPath)
 		}
 	}
 	return nil
@@ -500,7 +692,7 @@ func (c *RepoConfig) writeSearchPage(pageData *PageData) {
 func (c *RepoConfig) writeHTMLTreeFile(pageData *PageData, treeItem *TreeItem) (string, string, int64, error) {
 	b, err := treeItem.Entry.Blob().Bytes()
 	if err != nil {
-		return "", "", 0, tracerr.Errorf("failed to get blob bytes for %s: %w", treeItem.Path, err)
+		return "", "", 0, tracerr.Wrapf(err, "failed to get blob bytes for %s", treeItem.Path)
 	}
 
 	var contentsHTML template.HTML
@@ -595,14 +787,55 @@ func (c *RepoConfig) writeLogDiff(repo *git.Repository, pageData *PageData, comm
 	})
 }
 
-// URL Generation
-func (c *RepoConfig) getSummaryURL() template.URL { return template.URL(c.RootRelative + "index.html") }
-func (c *RepoConfig) getRefsURL() template.URL    { return template.URL(c.RootRelative + "refs.html") }
-func (c *RepoConfig) getSearchURL() template.URL  { return template.URL(c.RootRelative + "search.html") }
-func getRevIDForURL(info RevInfo) string          { return info.Name() }
-func getTreeBaseDir(info RevInfo) string          { return filepath.Join("/", "tree", getRevIDForURL(info)) }
-func getLogBaseDir(info RevInfo) string           { return filepath.Join("/", "logs", getRevIDForURL(info)) }
-func getFileBaseDir(info RevInfo) string          { return filepath.Join(getTreeBaseDir(info), "item") }
+func (c *RepoConfig) writeIssuesPages(pageData *PageData, db *IssueDatabase) {
+	c.Logger.Info("writing issues pages")
+	var issuesList []*Issue
+	for _, issue := range db.Issues {
+		issue.URL = c.getIssueURL(issue.ID)
+		issuesList = append(issuesList, issue)
+	}
+
+	sort.Slice(issuesList, func(i, j int) bool {
+		return issuesList[i].CreatedAt.After(issuesList[j].CreatedAt)
+	})
+
+	c.writePage("html/issues.page.tmpl", "index.html", "issues", &IssuesListPageData{
+		PageData: pageData,
+		Issues:   issuesList,
+	})
+
+	for _, issue := range issuesList {
+		c.writePage("html/issue.page.tmpl", fmt.Sprintf("%d.html", issue.ID), "issues", &SingleIssuePageData{
+			PageData: pageData,
+			Issue:    issue,
+		})
+	}
+}
+
+func (c *RepoConfig) getSummaryURL() template.URL {
+	return template.URL(c.RootRelative + "index.html")
+}
+func (c *RepoConfig) getRefsURL() template.URL {
+	return template.URL(c.RootRelative + "refs.html")
+}
+func (c *RepoConfig) getSearchURL() template.URL {
+	return template.URL(c.RootRelative + "search.html")
+}
+func (c *RepoConfig) getIssuesURL() template.URL {
+	return c.compileURL("issues", "index.html")
+}
+func getRevIDForURL(info RevInfo) string {
+	return info.Name()
+}
+func getTreeBaseDir(info RevInfo) string {
+	return filepath.Join("/", "tree", getRevIDForURL(info))
+}
+func getLogBaseDir(info RevInfo) string {
+	return filepath.Join("/", "logs", getRevIDForURL(info))
+}
+func getFileBaseDir(info RevInfo) string {
+	return filepath.Join(getTreeBaseDir(info), "item")
+}
 func getFileDir(info RevInfo, fname string) string {
 	return filepath.Join(getFileBaseDir(info), fname)
 }
@@ -624,6 +857,9 @@ func (c *RepoConfig) getCommitURL(commitID string) template.URL {
 	}
 	return c.compileURL("commits", fmt.Sprintf("%s.html", commitID))
 }
+func (c *RepoConfig) getIssueURL(issueID int) template.URL {
+	return c.compileURL("issues", fmt.Sprintf("%d.html", issueID))
+}
 func (c *RepoConfig) getURLs() *SiteURLs {
 	return &SiteURLs{
 		HomeURL:    template.URL(c.HomeURL),
@@ -631,6 +867,7 @@ func (c *RepoConfig) getURLs() *SiteURLs {
 		RefsURL:    c.getRefsURL(),
 		SummaryURL: c.getSummaryURL(),
 		SearchURL:  c.getSearchURL(),
+		IssuesURL:  c.getIssuesURL(),
 	}
 }
 
@@ -704,7 +941,7 @@ func (c *RepoConfig) writeRepo() error {
 	c.Logger.Info("writing repo", "repoPath", c.RepoPath)
 	repo, err := git.Open(c.RepoPath)
 	if err != nil {
-		return tracerr.Errorf("failed to open git repo %s: %w", c.RepoPath, err)
+		return tracerr.Wrapf(err, "failed to open git repo %s", c.RepoPath)
 	}
 
 	gitAttrPath := filepath.Join(c.RepoPath, ".gitattributes")
@@ -716,9 +953,22 @@ func (c *RepoConfig) writeRepo() error {
 		}
 	}
 
+	if c.IssuesEnabled {
+		c.Logger.Info("issues enabled for repo, attempting to load", "path", c.IssuesDBPath)
+		db, aliasMap, err := loadIssues(c)
+		if err != nil {
+			c.Logger.Error("failed to load issues database, proceeding with empty issue list", "path", c.IssuesDBPath, "error", err)
+			c.IssueDB = &IssueDatabase{Issues: make(map[int]*Issue)}
+		} else {
+			c.IssueDB = db
+			c.AliasMap = aliasMap
+			c.Logger.Info("successfully loaded issues database", "issues_count", len(c.IssueDB.Issues), "aliases_loaded", len(c.AliasMap))
+		}
+	}
+
 	refs, err := repo.ShowRef(git.ShowRefOptions{Heads: true, Tags: true})
 	if err != nil {
-		return tracerr.Errorf("failed to get refs: %w", err)
+		return tracerr.Wrapf(err, "failed to get refs")
 	}
 
 	var first *RevData
@@ -777,7 +1027,7 @@ func (c *RepoConfig) writeRepo() error {
 	var wg sync.WaitGroup
 
 	for i, revData := range revs {
-		pageData := &PageData{c, c.getURLs(), revData}
+		pageData := &PageData{c, c.getURLs(), revData, c.AliasMap}
 		isFirst := i == 0
 		wg.Add(1)
 		go func(d *PageData, firstRev bool) {
@@ -802,12 +1052,16 @@ func (c *RepoConfig) writeRepo() error {
 	}
 	wg.Wait()
 
-	pageData := &PageData{c, c.getURLs(), first}
+	pageData := &PageData{c, c.getURLs(), first, c.AliasMap}
 	c.writeRefs(pageData, refInfoList)
 	c.writeSearchIndex(searchIndex)
 	c.writeSearchPage(pageData)
 	for lang, files := range langFiles {
 		c.writeLanguagePage(pageData, lang, files)
+	}
+
+	if c.IssuesEnabled && c.IssueDB != nil {
+		c.writeIssuesPages(pageData, c.IssueDB)
 	}
 
 	langStats, totalSize := calculateLanguageStats(repo, first.id, c)
@@ -845,7 +1099,7 @@ func (tw *TreeWalker) calcBreadcrumbs(curpath string) []*Breadcrumb {
 	crumbs := make([]*Breadcrumb, len(parts)+1)
 	crumbs[0] = &Breadcrumb{
 		URL:  tw.Config.getTreeURL(tw.PageData.RevData),
-		Text: tw.PageData.Repo.RepoName,
+		Text: tw.PageData.Repo.Label,
 	}
 	for i, part := range parts {
 		currentCrumbPath := filepath.Join(parts[:i+1]...)
@@ -875,7 +1129,7 @@ func (tw *TreeWalker) newTreeItem(entry *git.TreeEntry, curpath string, crumbs [
 			CommandOptions: git.CommandOptions{Args: []string{"-1"}},
 		})
 		if err != nil {
-			return nil, tracerr.Errorf("failed to get last commit for %s: %w", item.Path, err)
+			return nil, tracerr.Wrapf(err, "failed to get last commit for %s", item.Path)
 		}
 		if len(lastCommits) > 0 {
 			lc := lastCommits[0]
@@ -944,11 +1198,10 @@ func (tw *TreeWalker) walk(tree *git.Tree, curpath string) {
 }
 
 func (c *RepoConfig) writeRevision(repo *git.Repository, pageData *PageData, refs []*RefInfo) (template.HTML, []*SearchIndexEntry, map[string][]*SearchIndexEntry, error) {
-	c.Logger.Info("compiling revision", "repoName", c.RepoName, "revision", pageData.RevData.Name())
+	c.Logger.Info("compiling revision", "repoName", c.Label, "revision", pageData.RevData.Name())
 	var wg sync.WaitGroup
 	errChan := make(chan error, 20)
 
-	// Process commits
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -958,7 +1211,7 @@ func (c *RepoConfig) writeRevision(repo *git.Repository, pageData *PageData, ref
 		}
 		commits, err := repo.CommitsByPage(pageData.RevData.ID(), 0, pageSize)
 		if err != nil {
-			errChan <- tracerr.Errorf("failed to get commits for %s: %w", pageData.RevData.ID(), err)
+			errChan <- tracerr.Wrapf(err, "failed to get commits for %s", pageData.RevData.ID())
 			return
 		}
 
@@ -997,10 +1250,9 @@ func (c *RepoConfig) writeRevision(repo *git.Repository, pageData *PageData, ref
 		c.writeLog(pageData, logs)
 	}()
 
-	// Process tree
 	tree, err := repo.LsTree(pageData.RevData.ID())
 	if err != nil {
-		return "", nil, nil, tracerr.Errorf("failed to list tree for %s: %w", pageData.RevData.ID(), err)
+		return "", nil, nil, tracerr.Wrapf(err, "failed to list tree for %s", pageData.RevData.ID())
 	}
 
 	var readme template.HTML
@@ -1095,11 +1347,10 @@ func (c *RepoConfig) writeRevision(repo *git.Repository, pageData *PageData, ref
 		return "", nil, nil, err
 	}
 
-	c.Logger.Info("compilation complete", "repoName", c.RepoName, "revision", pageData.RevData.Name())
+	c.Logger.Info("compilation complete", "repoName", c.Label, "revision", pageData.RevData.Name())
 	return readme, searchIndex, langFiles, nil
 }
 
-// Language Stats & Theme
 var langColors = map[string]string{
 	"Go":         "#00ADD8",
 	"C":          "#555555",
@@ -1115,11 +1366,16 @@ var langColors = map[string]string{
 	"Markdown":   "#083FA1",
 	"JSON":       "#292929",
 	"YAML":       "#CB171E",
-	"B":          "#555555",
+	"B":          "#550000",
+	"Bx":         "#6b0015",
+	"Abuild":     "#24aae2",
 	"Nim":        "#ffe953",
 }
 
 func getLanguageColor(lang string) string {
+	if lang == "Other" {
+		return "#999999"
+	}
 	if color, ok := langColors[lang]; ok {
 		return color
 	}
@@ -1127,7 +1383,7 @@ func getLanguageColor(lang string) string {
 	for _, char := range lang {
 		hash = int(char) + ((hash << 5) - hash)
 	}
-	return fmt.Sprintf("#%06x", (hash&0x00FFFFFF))
+	return fmt.Sprintf("#%06x", (hash & 0x00FFFFFF))
 }
 
 func calculateLanguageStats(repo *git.Repository, rev string, config *RepoConfig) ([]*LanguageStat, int64) {
@@ -1189,7 +1445,6 @@ func calculateLanguageStats(repo *git.Repository, rev string, config *RepoConfig
 		if color == "" {
 			color = getLanguageColor(lang)
 		}
-
 		stats = append(stats, &LanguageStat{
 			Name:       lang,
 			Percentage: (float64(size) / float64(totalSize)) * 100,
@@ -1198,10 +1453,38 @@ func calculateLanguageStats(repo *git.Repository, rev string, config *RepoConfig
 		})
 	}
 
-	sort.Slice(stats, func(i, j int) bool {
-		return stats[i].Percentage > stats[j].Percentage
+	var finalStats []*LanguageStat
+	var otherPercentage float64
+	for _, stat := range stats {
+		var keep bool
+		if config.Whitelist == nil {
+			keep = stat.Percentage >= 5.0
+		} else {
+			isWhitelisted := config.Whitelist[stat.Name]
+			keep = isWhitelisted || stat.Percentage >= 5.0
+		}
+
+		if keep {
+			finalStats = append(finalStats, stat)
+		} else {
+			otherPercentage += stat.Percentage
+		}
+	}
+
+	if otherPercentage > 0.001 {
+		finalStats = append(finalStats, &LanguageStat{
+			Name:       "Other",
+			Percentage: otherPercentage,
+			Color:      getLanguageColor("Other"),
+			URL:        "",
+		})
+	}
+
+	sort.Slice(finalStats, func(i, j int) bool {
+		return finalStats[i].Percentage > finalStats[j].Percentage
 	})
-	return stats, totalSize
+
+	return finalStats, totalSize
 }
 
 func generateThemeCSS(theme *chroma.Style) string {
@@ -1212,26 +1495,117 @@ func generateThemeCSS(theme *chroma.Style) string {
 	cm := theme.Get(chroma.Comment)
 	ln := theme.Get(chroma.LiteralNumber)
 	return fmt.Sprintf(`:root {
- --bg-color: %s; --text-color: %s; --border: %s;
- --link-color: %s; --hover: %s; --visited: %s;
+  --bg-color: %s; --text-color: %s; --border: %s;
+  --link-color: %s; --hover: %s; --visited: %s;
 }`, bg.Background, txt.Colour, cm.Colour, nv.Colour, kw.Colour, ln.Colour)
 }
 
-type PgitConfig struct {
-	Repos []RepoConfig `yaml:"repos"`
+func processEnvVars(data []byte) ([]byte, error) {
+	re := regexp.MustCompile(`\{\{\s*env\.(\w+)\s*\}\}`)
+	var firstError error
+
+	processed := re.ReplaceAllStringFunc(string(data), func(match string) string {
+		if firstError != nil {
+			return ""
+		}
+
+		varName := re.FindStringSubmatch(match)[1]
+		value := os.Getenv(varName)
+
+		if value == "" {
+			firstError = fmt.Errorf("environment variable '%s' not set or is empty", varName)
+			return ""
+		}
+		return value
+	})
+
+	if firstError != nil {
+		return nil, firstError
+	}
+
+	return []byte(processed), nil
 }
 
-func loadConfig(path string, logger *slog.Logger) (*PgitConfig, error) {
+func loadPgitConfig(path string, logger *slog.Logger) (*PgitConfig, error) {
 	logger.Info("loading configuration file", "path", path)
 	yamlFile, err := os.ReadFile(path)
 	if err != nil {
-		return nil, tracerr.Errorf("error reading config file %s: %w", path, err)
+		return nil, tracerr.Wrapf(err, "error reading config file %s", path)
 	}
+
+	processedYaml, err := processEnvVars(yamlFile)
+	if err != nil {
+		return nil, tracerr.Wrapf(err, "error processing env vars in config")
+	}
+
 	var pgitConfig PgitConfig
-	if err := yaml.Unmarshal(yamlFile, &pgitConfig); err != nil {
-		return nil, tracerr.Errorf("error parsing YAML file: %w", err)
+	if err := yaml.Unmarshal(processedYaml, &pgitConfig); err != nil {
+		return nil, tracerr.Wrapf(err, "error parsing YAML file")
 	}
 	return &pgitConfig, nil
+}
+
+func resolvePgitConfig(repoKey string, g, r PgitRepoConfig) *RepoConfig {
+	resolveStr := func(repoVal, globalVal *string, defaultVal string) string {
+		if repoVal != nil {
+			return *repoVal
+		}
+		if globalVal != nil {
+			return *globalVal
+		}
+		return defaultVal
+	}
+	resolveInt := func(repoVal, globalVal *int, defaultVal int) int {
+		if repoVal != nil {
+			return *repoVal
+		}
+		if globalVal != nil {
+			return *globalVal
+		}
+		return defaultVal
+	}
+	resolveBool := func(repoVal, globalVal *bool, defaultVal bool) bool {
+		if repoVal != nil {
+			return *repoVal
+		}
+		if globalVal != nil {
+			return *globalVal
+		}
+		return defaultVal
+	}
+
+	cfg := RepoConfig{
+		RepoName:           repoKey,
+		RepoPath:           r.RepoPath,
+		Revs:               r.Revs,
+		Outdir:             resolveStr(r.Outdir, g.Outdir, "./pub"),
+		Desc:               resolveStr(r.Desc, g.Desc, ""),
+		MaxCommits:         resolveInt(r.MaxCommits, g.MaxCommits, 100),
+		Readme:             resolveStr(r.Readme, g.Readme, "README.md"),
+		HideTreeLastCommit: resolveBool(r.HideTreeLastCommit, g.HideTreeLastCommit, false),
+		HomeURL:            resolveStr(r.HomeURL, g.HomeURL, ""),
+		CloneURL:           resolveStr(r.CloneURL, g.CloneURL, ""),
+		RootRelative:       resolveStr(r.RootRelative, g.RootRelative, "/"),
+		ThemeName:          resolveStr(r.ThemeName, g.ThemeName, "gruvbox-dark"),
+		Label:              resolveStr(r.Label, g.Label, repoKey),
+		IssuesDBPath:       resolveStr(r.IssuesDBPath, g.IssuesDBPath, ""),
+		IssuesKey:          resolveStr(r.IssuesKey, g.IssuesKey, ""),
+		DisableEncryption:  resolveBool(r.DisableEncryption, g.DisableEncryption, false),
+	}
+	if r.RenderMarkdown != nil {
+		cfg.RenderMarkdown = r.RenderMarkdown
+	} else if g.RenderMarkdown != nil {
+		cfg.RenderMarkdown = g.RenderMarkdown
+	} else {
+		t := true
+		cfg.RenderMarkdown = &t
+	}
+
+	if cfg.IssuesDBPath != "" {
+		cfg.IssuesEnabled = true
+	}
+
+	return &cfg
 }
 
 func main() {
@@ -1242,10 +1616,10 @@ func main() {
 		Name:  "pgit",
 		Usage: "A static site generator for git repositories",
 		Flags: []cli.Flag{
-			&cli.StringFlag{Name: "config", Value: "pgit.yaml", Usage: "Path to config file"},
+			&cli.StringFlag{Name: "config", Value: "pgit.yml", Usage: "Path to config file"},
 		},
-		Action: func(ctx context.Context, cmd *cli.Command) error {
-			pgitConfig, err := loadConfig(cmd.String("config"), logger)
+		Action: func(_ context.Context, cmd *cli.Command) error {
+			pgitConfig, err := loadPgitConfig(cmd.String("config"), logger)
 			if err != nil {
 				return err
 			}
@@ -1257,21 +1631,15 @@ func main() {
 			var wg sync.WaitGroup
 			formatter := html.New(html.WithLineNumbers(true), html.WithLinkableLineNumbers(true, ""), html.WithClasses(true))
 
-			for _, repoCfg := range pgitConfig.Repos {
+			for repoKey, repoCfg := range pgitConfig.Repos {
 				wg.Add(1)
-				go func(config RepoConfig) {
+				go func(key string, r PgitRepoConfig) {
 					defer wg.Done()
-					if config.Label == "" {
-						config.Label = repoName(config.RepoPath)
-					}
-					config.RepoName = config.Label
+					config := resolvePgitConfig(key, pgitConfig.Global, r)
+
 					if len(config.Revs) == 0 {
 						logger.Error("you must provide revs for repo", "repo", config.RepoPath)
 						return
-					}
-					if config.RenderMarkdown == nil {
-						t := true
-						config.RenderMarkdown = &t
 					}
 
 					config.Logger = logger
@@ -1308,7 +1676,7 @@ func main() {
 					if err = formatter.WriteCSS(w, config.ChromaTheme); err != nil {
 						logger.Error("failed to write syntax.css", "repo", config.RepoPath, "error", err)
 					}
-				}(repoCfg)
+				}(repoKey, repoCfg)
 			}
 			wg.Wait()
 			logger.Info("all repositories processed successfully")
@@ -1324,4 +1692,105 @@ func main() {
 		}
 		os.Exit(1)
 	}
+}
+
+func loadIssues(config *RepoConfig) (*IssueDatabase, map[string]string, error) {
+	if config.IssuesDBPath == "" {
+		return nil, nil, errors.New("issues-db path is not configured")
+	}
+
+	fileData, err := os.ReadFile(config.IssuesDBPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			config.Logger.Info("issues db file not found, no issues will be displayed", "path", config.IssuesDBPath)
+			return &IssueDatabase{Issues: make(map[int]*Issue)}, nil, nil
+		}
+		return nil, nil, fmt.Errorf("could not read issues file '%s': %w", config.IssuesDBPath, err)
+	}
+	if len(fileData) == 0 {
+		return &IssueDatabase{Issues: make(map[int]*Issue)}, nil, nil
+	}
+
+	var jsonData []byte
+	if !config.DisableEncryption && config.IssuesKey != "" {
+		decryptedData, err := decrypt(fileData, config.IssuesKey)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to decrypt issues file '%s': %w", config.IssuesDBPath, err)
+		}
+		jsonData = decryptedData
+	} else {
+		jsonData = fileData
+	}
+
+	var globalDB GlobalIssueDatabase
+	if err := json.Unmarshal(jsonData, &globalDB); err == nil && globalDB.Repos != nil {
+		config.Logger.Info("detected global issues database", "path", config.IssuesDBPath)
+		repoDB, ok := globalDB.Repos[config.RepoName]
+		if !ok {
+			return nil, nil, fmt.Errorf("repo key '%s' not found in global issues database '%s'", config.RepoName, config.IssuesDBPath)
+		}
+		return repoDB, globalDB.EmailToAlias, nil
+	}
+
+	var repoDB IssueDatabase
+	if err := json.Unmarshal(jsonData, &repoDB); err == nil {
+		config.Logger.Info("detected per-repo issues database", "path", config.IssuesDBPath)
+		return &repoDB, nil, nil
+	}
+
+	return nil, nil, fmt.Errorf("failed to parse issues database '%s': not a valid global or per-repo DB format", config.IssuesDBPath)
+}
+
+func encrypt(plaintext []byte, hexKey string) ([]byte, error) {
+	key, err := hex.DecodeString(hexKey)
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to decode hex key: %v", errDBEncrypt, err)
+	}
+	if len(key) != 32 {
+		return nil, fmt.Errorf("%w: key must be 32 bytes for AES-256", errDBEncrypt)
+	}
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, err
+	}
+
+	return gcm.Seal(nonce, nonce, plaintext, nil), nil
+}
+
+func decrypt(ciphertext []byte, hexKey string) ([]byte, error) {
+	key, err := hex.DecodeString(hexKey)
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to decode hex key: %v", errDBDecrypt, err)
+	}
+	if len(key) != 32 {
+		return nil, fmt.Errorf("%w: key must be 32 bytes for AES-256", errDBDecrypt)
+	}
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(ciphertext) < gcm.NonceSize() {
+		return nil, fmt.Errorf("%w: ciphertext too short", errDBDecrypt)
+	}
+
+	nonce, ciphertext := ciphertext[:gcm.NonceSize()], ciphertext[gcm.NonceSize():]
+	return gcm.Open(nil, nonce, ciphertext, nil)
 }

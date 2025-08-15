@@ -1,0 +1,51 @@
+{{template "base" .}}
+
+{{define "title"}}Issues - {{.Repo.RepoName}}{{end}}
+{{define "meta"}}{{end}}
+
+{{define "content"}}
+<div class="issues-page-header flex justify-between items-center mb-2">
+    <div class="filters">
+        <input type="text" id="issue-filter-input" placeholder="Filter all issues" class="mono">
+    </div>
+    <a id="new-issue-btn" href="#" class="btn">New Issue</a>
+</div>
+
+<div class="box">
+    <header class="issues-list-header flex items-center p border-b">
+        <strong>{{len .Issues}} Issues</strong>
+    </header>
+    <ul class="list-none p-0 m-0" id="issues-list">
+        {{range .Issues}}
+        <li class="issue-list-item flex items-center gap p" data-issue-title="{{.Title}}">
+            <span class="issue-status issue-status-{{.StatusClass}}">
+                {{if .IsClosed}}
+                <svg class="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16"><path d="M11.28 6.78a.75.75 0 0 0-1.06-1.06L7.25 8.69 5.78 7.22a.75.75 0 0 0-1.06 1.06l2 2a.75.75 0 0 0 1.06 0l3.5-3.5Z"></path><path d="M16 8A8 8 0 1 1 0 8a8 8 0 0 1 16 0Zm-1.5 0a6.5 6.5 0 1 0-13 0 6.5 6.5 0 0 0 13 0Z"></path></svg>
+                {{else}}
+                <svg class="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16"><path d="M8 9.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z"></path><path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0ZM1.5 8a6.5 6.5 0 1 1 13 0 6.5 6.5 0 0 1-13 0Z"></path></svg>
+                {{end}}
+            </span>
+            <div class="flex-1">
+                <a href="{{.URL}}" class="font-bold">{{.Title}}</a>
+                <div class="text-sm font-grey-light">
+                    #{{.ID}} opened on {{.CreatedAt.Format "Jan 2, 2006"}} by {{getAuthor .Author}}
+                </div>
+            </div>
+            <div class="issue-actions">
+                <div class="dropdown">
+                    <button class="btn btn-secondary dropdown-toggle">Mark as ▼</button>
+                    <div class="dropdown-menu">
+                        {{$issueID := .ID}}
+                        {{range $status, $class := $.Repo.IssueDB.MarkAs}}
+                        <a href="#" class="dropdown-item mark-as-btn" data-issue-id="{{$issueID}}" data-status="{{$status}}">{{$status}}</a>
+                        {{end}}
+                    </div>
+                </div>
+            </div>
+        </li>
+        {{else}}
+        <li class="p">No issues found.</li>
+        {{end}}
+    </ul>
+</div>
+{{end}}

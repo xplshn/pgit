@@ -20,6 +20,7 @@
     <span class="font-bold">{{.RevData.Name}}</span> |
     <a href="{{.RevData.TreeURL}}">code</a> |
     <a href="{{.RevData.LogURL}}">commits</a>
+    {{if .Repo.IssuesEnabled}} | <a href="{{.SiteURLs.IssuesURL}}">issues</a>{{end}}
   </nav>
 
   <div>

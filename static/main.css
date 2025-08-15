@@ -149,7 +149,6 @@ body {
   color: var(--grey-light);
 }
 
-/* Search Box Styles */
 #search-form {
   display: flex;
   width: 250px;
@@ -174,7 +173,6 @@ body {
     border-radius: 0 4px 4px 0;
 }
 
-/* Search Page Styles */
 #search-results-container ul {
     list-style: none;
     padding: 0;
@@ -218,4 +216,396 @@ body {
         flex-direction: column;
         align-items: flex-start;
     }
+}
+
+/* Issue Tracker Styles */
+.issue-container {
+    padding: 0 1rem 1rem 1rem;
+}
+
+/* This removes the padding from the box on the issues list page to fix the layout gap. */
+.box:has(.issues-list-header) {
+    padding: 0;
+}
+
+.issue-header {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+.issue-header h1 {
+    margin-top: 0;
+}
+
+.issue-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 1rem;
+    margin-top: 0.5rem;
+}
+
+.issue-meta-actions {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.issue-meta address {
+    font-style: normal;
+}
+
+.issue-list-item {
+  padding: var(--grid-height);
+  border-bottom: 1px solid var(--border);
+}
+.issue-list-item:last-child {
+  border-bottom: none;
+}
+
+.issue-status {
+  padding: 4px 8px;
+  border-radius: 2em;
+  font-size: 0.9em;
+  font-weight: bold;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.issue-status .icon {
+    width: 16px;
+    height: 16px;
+}
+
+.issue-status-open, .issue-status-in-progress {
+  color: #3fb950;
+  border: 1px solid #3fb950;
+}
+.issue-status-open .icon, .issue-status-in-progress .icon {
+    fill: #3fb950;
+    stroke: #3fb950;
+}
+
+.issue-status-resolved, .issue-status-closed, .issue-status-not-planned, .issue-status-duplicate {
+  color: #a371f7;
+  border: 1px solid #a371f7;
+}
+.issue-status-resolved .icon, .issue-status-closed .icon, .issue-status-not-planned .icon, .issue-status-duplicate .icon {
+    fill: #a371f7;
+    stroke: #a371f7;
+}
+
+.timeline {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+}
+
+.timeline-item {
+    position: relative;
+}
+
+.comment-box {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.comment-box footer {
+    margin-bottom: 0.1rem;
+}
+
+.comment-header, .issues-list-header {
+    margin: 0;
+    background-color: var(--pre);
+    padding: 0.4rem 0.8rem;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.8em;
+    color: var(--grey-light);
+}
+
+.comment-header address {
+    font-style: normal;
+}
+
+.comment-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.comment-actions .action-btn {
+    background: none;
+    border: none;
+    color: var(--grey-light);
+    cursor: pointer;
+    padding: 2px 6px;
+    font-size: 1.2em;
+    border-radius: 4px;
+}
+.comment-actions .action-btn:hover {
+    background-color: var(--grey);
+    color: var(--text-color);
+}
+
+.comment-body {
+    padding: 1rem;
+}
+
+.comment-edit-controls {
+    padding: 0.5rem 1rem;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    background-color: var(--pre);
+}
+
+.comment-history {
+    font-size: 0.9em;
+    padding: 0 1rem 0.5rem;
+    border-top: 1px solid var(--border);
+}
+.comment-history summary {
+    cursor: pointer;
+    padding: 0.5rem 0;
+    color: var(--grey-light);
+}
+.comment-history ul {
+    list-style: none;
+    padding-left: 0;
+    margin: 0;
+}
+.comment-history li {
+    padding: 0.5rem 0;
+    border-top: 1px dashed var(--border);
+}
+.comment-history time {
+    display: block;
+    color: var(--grey-light);
+    margin-bottom: 0.5rem;
+}
+.comment-history pre {
+    margin: 0;
+    padding: 0.5rem;
+    font-size: 0.9em;
+}
+
+
+.comment-reactions {
+    padding: 0.5rem 1rem;
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    border-top: 1px solid var(--border);
+}
+
+.reaction-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background-color: var(--bg-color);
+    border: 1px solid var(--border);
+    border-radius: 1em;
+    padding: 2px 8px;
+    font-size: 0.9em;
+    cursor: pointer;
+}
+.reaction-badge:hover {
+    border-color: var(--link-color);
+}
+.reaction-badge .count {
+    font-weight: bold;
+    color: var(--text-color);
+}
+
+#composer-container {
+    padding: 1rem;
+}
+
+#reply-textarea, .comment-editor {
+    width: 100%;
+    min-height: 100px;
+    padding: var(--grid-height);
+    background-color: var(--bg-color);
+    color: var(--text-color);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    resize: vertical;
+}
+
+.comment-editor {
+    border-radius: 0;
+    border: none;
+    border-top: 1px solid var(--border);
+    min-height: 120px;
+}
+.comment-editor:focus {
+    outline: none;
+}
+
+
+.btn {
+  border: 1px solid var(--border);
+  background-color: var(--pre);
+  color: var(--text-color);
+  padding: 8px 16px;
+  font-weight: bold;
+  display: inline-block;
+  text-decoration: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.btn:hover {
+    border-color: var(--grey-light);
+    text-decoration: none;
+}
+.btn-secondary {
+    background-color: var(--bg-color);
+    border: 1px solid var(--border);
+    font-weight: normal;
+}
+.btn-secondary:hover {
+    border: 1px solid var(--grey-light);
+}
+
+
+/* Modal Styles */
+.modal {
+  display: none;
+  position: fixed;
+  z-index: 1000;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  background-color: rgba(0,0,0,0.5);
+}
+
+.modal-content {
+  background-color: var(--bg-color);
+  margin: 15% auto;
+  padding: var(--line-height);
+  border: 1px solid var(--border);
+  width: 80%;
+  max-width: 500px;
+  border-radius: 6px;
+  position: relative;
+}
+
+.modal-content input[type="text"],
+.modal-content textarea {
+    width: 100%;
+    padding: 8px;
+    background-color: var(--bg-color);
+    color: var(--text-color);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    margin-bottom: var(--grid-height);
+}
+
+.modal-content textarea {
+    min-height: 150px;
+    resize: vertical;
+}
+
+.modal-content .flex.justify-end {
+    gap: 0.5rem;
+}
+
+.close-btn {
+  color: var(--grey-light);
+  position: absolute;
+  top: 10px;
+  right: 20px;
+  font-size: 28px;
+  font-weight: bold;
+  cursor: pointer;
+}
+.close-btn:hover, .close-btn:focus {
+  color: var(--text-color);
+}
+#alias-input {
+    width: 100%;
+    padding: 8px;
+    background-color: var(--bg-color);
+    color: var(--text-color);
+    border: 1px solid var(--border);
+}
+
+#reaction-picker {
+    background-color: var(--bg-color);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    z-index: 10;
+}
+.reaction-picker-emoji {
+    background: none;
+    border: none;
+    font-size: 1.5em;
+    padding: 4px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+.reaction-picker-emoji:hover {
+    background-color: var(--pre);
+}
+
+#issue-filter-input {
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    background-color: var(--bg-color);
+    color: var(--text-color);
+    border-radius: 6px;
+    min-width: 300px;
+}
+
+.issues-list-header {
+    background-color: var(--pre);
+    padding: 8px 12px;
+}
+.issues-list-header strong {
+    font-weight: bold;
+}
+
+.dropdown {
+    position: relative;
+    display: inline-block;
+}
+
+.dropdown-menu {
+    display: none;
+    position: absolute;
+    right: 0;
+    background-color: var(--bg-color);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    z-index: 100;
+    min-width: 160px;
+    padding: 4px 0;
+}
+
+.dropdown-item {
+    display: block;
+    width: 100%;
+    padding: 8px 12px;
+    color: var(--text-color);
+    text-decoration: none;
+    background: none;
+    border: none;
+    text-align: left;
+}
+.dropdown-item:hover {
+    background-color: var(--pre);
+    text-decoration: none;
 }

@@ -1,0 +1,23 @@
+{
+  "issues": {},
+  "nextIssueId": 1,
+  "nextCommentId": 1,
+  "processedUids": {},
+  "repoName": "gbc-pgit",
+  "reactions": {
+    "lovebear": "ʕ♥ᴥ♥ʔ",
+    "meep": "\\(°^°)/",
+    "plain": "._.",
+    "smiley": "☺︎",
+    "snowman": "☃"
+  },
+  "mark_as": {
+    "Closed": "closed",
+    "Duplicate": "duplicate",
+    "Not Planned": "not-planned",
+    "Open": "open",
+    "Resolved": "resolved"
+  },
+  "issuesEmail": "pgitBot@xplshn.com.ar",
+  "subjectTag": "[pgit-gbc]"
+}

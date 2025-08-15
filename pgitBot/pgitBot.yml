@@ -1,0 +1,33 @@
+global:
+  imap_server: "imap.gmail.com:993"
+  imap_username: "{{ env.PGIT_IMAP_USERNAME }}"
+  imap_password: "{{ env.PGIT_IMAP_PASSWORD }}"
+  smtp_server: "smtp.gmail.com:587"
+  smtp_username: "{{ env.PGIT_IMAP_USERNAME }}"
+  smtp_password: "{{ env.PGIT_IMAP_PASSWORD }}"
+  smtp_from_addr: "pgitBot@xplshn.com.ar"
+  db_encryption_key: "{{ env.PGIT_DB_ENCRYPTION_KEY }}"
+  disable_encryption: false
+  subject_tag: "[pgit]"
+  #global_db_file: "pgit-issues.json"
+  imap_mailbox: "pgitBot"
+  reactions:
+    lovebear: "ʕ♥ᴥ♥ʔ"
+    meep: "\\(°^°)/"
+    plain: "._."
+    smiley: "☺︎"
+    snowman: "☃"
+  mark_as:
+    Resolved: "resolved"
+    "Not Planned": "not-planned"
+    Duplicate: "duplicate"
+    Open: "open"
+    Closed: "closed"
+
+  permissions:
+    "anto@xplshn.com.ar": ["all"]
+    "spam@xplshn.com.ar": []
+
+repos:
+  "gbc-pgit":
+    db_file: "gbc-issues.json"

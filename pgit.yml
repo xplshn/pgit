@@ -1,0 +1,44 @@
+# Global settings serve as defaults for all repositories.
+global:
+  max-commits: 100
+  readme: "README.md"
+  hide-tree-last-commit: false
+  home-url: "https://git.xplshn.com.ar"
+  theme: "gruvbox-dark"
+
+  #issues-db: "../pgitBot/pgit-issues.json"
+  issues-key: "{{ env.PGIT_DB_ENCRYPTION_KEY }}"
+  disable-encryption: true
+
+repos:
+  gbc:
+    repo: ../gbc
+    out: ./pub/gbc
+    revs: ["HEAD"]
+    desc: "GBC - Go B Compiler"
+    clone-url: "https://github.com/xplshn/gbc.git"
+    root-relative: "/gbc/"
+    issues-db: "../pgitBot/gbc-issues.json"
+
+  dbin:
+    repo: ./repos/dbin
+    revs: ["HEAD"]
+    desc: "📦 Poor man's package manager."
+    clone-url: "https://github.com/xplshn/dbin.git"
+    root-relative: "/dbin/"
+    theme: "gruvbox-light"
+
+  a-utils:
+    repo: ./repos/a-utils
+    revs: ["HEAD"]
+    desc: "+19 Unix utilities re-imagined yet POSIX."
+    clone-url: "https://github.com/xplshn/a-utils.git"
+    root-relative: "/a-utils/"
+
+  pgit:
+    repo: ./repos/pgit
+    revs: ["HEAD"]
+    desc: "Improved static site generator for git repos"
+    clone-url: "https://github.com/xplshn/pgit.git"
+    root-relative: "/pgit/"
+
