@@ -7,7 +7,7 @@ global:
   out_dir: "./pub"
   #issues-db: "../pgitBot/pgit-issues.json"
   issues-key: "{{ env.PGIT_DB_ENCRYPTION_KEY }}"
-  disable-encryption: true
+  disable-encryption: false
 
 repos:
   gbc:
