@@ -1280,7 +1280,7 @@ func (c *RepoConfig) writeRevision(repo *git.Repository, pageData *PageData, ref
 		defer wg.Done()
 		var fileWg sync.WaitGroup
 		for item := range treeItemChan {
-			if item.IsDir {
+			if item.Entry.Type() != git.ObjectBlob {
 				continue
 			}
 			fileWg.Add(1)
