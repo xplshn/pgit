@@ -11,10 +11,7 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    env:
-      PGIT_DB_ENCRYPTION_KEY: ${{ secrets.PGIT_DB_ENCRYPTION_KEY }}
-      PGIT_IMAP_USERNAME: ${{ secrets.PGIT_IMAP_USERNAME }}
-      PGIT_IMAP_PASSWORD: ${{ secrets.PGIT_IMAP_PASSWORD }}
+    environment: pgitBot
 
     steps:
       - name: Checkout GitHub repo
@@ -30,6 +27,10 @@ jobs:
           go-version: '1.24.x'
 
       - name: Run pgitBot
+        env:
+          PGIT_DB_ENCRYPTION_KEY: ${{ secrets.PGIT_DB_ENCRYPTION_KEY }}
+          PGIT_IMAP_USERNAME: ${{ secrets.PGIT_IMAP_USERNAME }}
+          PGIT_IMAP_PASSWORD: ${{ secrets.PGIT_IMAP_PASSWORD }}
         run: |
           go run ./pgitBot/pgitBot.go --config ./pgitBot/pgitBot.yml
 
