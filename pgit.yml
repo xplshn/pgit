@@ -4,7 +4,7 @@ global:
   hide-tree-last-commit: false
   home-url: "https://git.xplshn.com.ar"
   theme: "gruvbox-dark"
-
+  out_dir: "./pub"
   #issues-db: "../pgitBot/pgit-issues.json"
   issues-key: "{{ env.PGIT_DB_ENCRYPTION_KEY }}"
   disable-encryption: true
@@ -12,6 +12,7 @@ global:
 repos:
   gbc:
     repo: ./repos/gbc
+    out: ./pub/gbc
     revs: ["HEAD"]
     desc: "GBC - Go B Compiler"
     clone-url: "https://github.com/xplshn/gbc.git"
@@ -20,6 +21,7 @@ repos:
 
   dbin:
     repo: ./repos/dbin
+    out: ./pub/dbin
     revs: ["HEAD"]
     desc: "📦 Poor man's package manager."
     clone-url: "https://github.com/xplshn/dbin.git"
@@ -28,15 +30,16 @@ repos:
 
   a-utils:
     repo: ./repos/a-utils
+    out: ./pub/a-utils
     revs: ["HEAD"]
     desc: "+19 Unix utilities re-imagined yet POSIX."
     clone-url: "https://github.com/xplshn/a-utils.git"
     root-relative: "/a-utils/"
 
   pgit:
-    repo: ./repos/pgit
+    repo: ..
+    out: ./pub/pgit
     revs: ["HEAD"]
     desc: "Improved static site generator for git repos"
     clone-url: "https://github.com/xplshn/pgit.git"
     root-relative: "/pgit/"
-
