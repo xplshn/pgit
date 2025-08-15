@@ -33,16 +33,16 @@ jobs:
           fetch-depth: 1
 
       - name: Run pgitBot
-        env:
-          PGIT_IMAP_USERNAME: ${{ secrets.PGIT_IMAP_USERNAME }}
-          PGIT_IMAP_PASSWORD: ${{ secrets.PGIT_IMAP_PASSWORD }}
-          PGIT_DB_ENCRYPTION_KEY: ${{ secrets.PGIT_DB_ENCRYPTION_KEY }}
-        run: go run ./pgitBot/pgitBot.go --config ./pgitBot/pgitBot.yml
+        run: |
+          export PGIT_DB_ENCRYPTION_KEY="${{ secrets.PGIT_DB_ENCRYPTION_KEY }}" \
+                 PGIT_IMAP_USERNAME="${{ secrets.PGIT_IMAP_USERNAME }}"         \
+                 PGIT_IMAP_PASSWORD="${{ secrets.PGIT_IMAP_PASSWORD }}"
+          go run ./pgitBot/pgitBot.go --config ./pgitBot/pgitBot.yml
 
       - name: Commit and push database changes
         run: |
           git config --global user.name '[CI] pgitBot'
           git config --global user.email 'action@github.com'
-          git add pgit/pgitBot/gbc-issues.json
-          git commit -m "bot: Update issue database" || exit 0
+          git add pgit/pgitBot/*-issues.json
+          git commit -m "pgitBot: Update issues database" || exit 0
           git push
