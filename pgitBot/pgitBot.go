@@ -32,11 +32,11 @@ import (
 )
 
 var (
-	debug           bool
-	errConfigLoad   = errors.New("config load error")
+	debug         bool
+	errConfigLoad = errors.New("config load error")
 	errConfigCreate = errors.New("config create error")
-	errDBEncrypt    = errors.New("database encryption error")
-	errDBDecrypt    = errors.New("database decryption error")
+	errDBEncrypt  = errors.New("database encryption error")
+	errDBDecrypt  = errors.New("database decryption error")
 )
 
 type RepoConfig struct {
@@ -547,13 +547,23 @@ func processEmails(c *imapclient.Client, db *RepoDatabase, globalCfg *GlobalConf
 		close(rejectedUIDsChan)
 	}()
 
+	var processedUIDs []imap.UID
+	var rejectedResults []RejectionResult
 	var uidsToMarkSeen imap.UIDSet
-	db.mu.Lock()
+
 	for uid := range processedUIDsChan {
+		processedUIDs = append(processedUIDs, uid)
+	}
+	for rejection := range rejectedUIDsChan {
+		rejectedResults = append(rejectedResults, rejection)
+	}
+
+	db.mu.Lock()
+	for _, uid := range processedUIDs {
 		db.ProcessedUIDs[uid] = true
 		uidsToMarkSeen.AddNum(uid)
 	}
-	for rejection := range rejectedUIDsChan {
+	for _, rejection := range rejectedResults {
 		db.RejectedUIDs[rejection.UID] = rejection.Reason
 		uidsToMarkSeen.AddNum(rejection.UID)
 	}
