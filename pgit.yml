@@ -11,8 +11,7 @@ global:
 
 repos:
   gbc:
-    repo: ../gbc
-    out: ./pub/gbc
+    repo: ./repos/gbc
     revs: ["HEAD"]
     desc: "GBC - Go B Compiler"
     clone-url: "https://github.com/xplshn/gbc.git"
