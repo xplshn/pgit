@@ -13,15 +13,16 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: alpine:latest
-    env:
-      PGIT_DB_ENCRYPTION_KEY: ${{ secrets.PGIT_DB_ENCRYPTION_KEY }}
-      PGIT_IMAP_USERNAME: ${{ secrets.PGIT_IMAP_USERNAME }}
-      PGIT_IMAP_PASSWORD: ${{ secrets.PGIT_IMAP_PASSWORD }}
+      options: >-
+        --env PGIT_DB_ENCRYPTION_KEY=${{ secrets.PGIT_DB_ENCRYPTION_KEY }}
+        --env PGIT_IMAP_USERNAME=${{ secrets.PGIT_IMAP_USERNAME }}
+        --env PGIT_IMAP_PASSWORD=${{ secrets.PGIT_IMAP_PASSWORD }}
+
     steps:
-      - name: Install Go n Git
+      - name: Install Go and Git
         run: |
           apk update
-          apk add go git
+          apk add --no-cache go git
 
       - name: Checkout GitHub repo
         uses: actions/checkout@v4
