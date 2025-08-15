@@ -17,7 +17,7 @@ repos:
     desc: "GBC - Go B Compiler"
     clone-url: "https://github.com/xplshn/gbc.git"
     root-relative: "/gbc/"
-    issues-db: "./pgitBot/gbc-issues.json"
+    issues-db: "../pgitBot/gbc-issues.json"
 
   dbin:
     repo: ./repos/dbin
