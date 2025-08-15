@@ -12,7 +12,8 @@ err() { printf "ERR %s\n" "$*" >&2; }
 
 ok "Syncing repositories..."
 mkdir -p "$REPOS_DIR" "$WWW_DIR"
-yq -r '.repos[] | .clone-url + " " + .label' "$PGIT_CONFIG" |
+# Corrected yq command to read the key as the label
+yq -r '.repos | to_entries[] | .value."clone-url" + " " + .key' "$PGIT_CONFIG" |
 while read -r url label; do
     dir="$REPOS_DIR/$label"
     if [ "$dir" = ".." ]; then
@@ -43,7 +44,7 @@ ok "Generating index.html..."
     p{margin:0;font-size:0.9em;color:#555}
     </style>'
     printf '<h1>git.xplshn.com.ar</h1><ul>'
-    yq -r '.repos[] | .label + "|" + .desc' "$PGIT_CONFIG" |
+    yq -r '.repos | to_entries[] | .key + "|" + .value.desc' "$PGIT_CONFIG" |
     while IFS='|' read -r label desc; do
         printf '<li><a href="./%s/">%s</a><p>%s</p></li>\n' "$label" "$label" "$desc"
     done
