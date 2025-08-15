@@ -29,5 +29,5 @@ global:
     "spam@xplshn.com.ar": []
 
 repos:
-  "gbc-pgit":
+  "gbc":
     db_file: "gbc-issues.json"
