@@ -3,7 +3,7 @@ name: Generate static repos and deploy to git.xplshn.com.ar
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 0 * * *"
+    - cron: '*/12 * * * *' #- cron: "0 0 * * *"
 
 permissions:
   contents: write
