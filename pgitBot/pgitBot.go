@@ -40,37 +40,37 @@ var (
 )
 
 type RepoConfig struct {
-	DBFile            string              `yaml:"db_file"`
-	ExcludeFromGlobal bool                `yaml:"exclude_from_global"`
-	SubjectTag        *string             `yaml:"subject_tag"`
-	IMAPMailbox       *string             `yaml:"imap_mailbox"`
-	Reactions         map[string]string   `yaml:"reactions"`
-	MarkAs            map[string]string   `yaml:"mark_as"`
+	DBFile            string            `yaml:"db_file"`
+	ExcludeFromGlobal bool              `yaml:"exclude_from_global"`
+	SubjectTag        *string           `yaml:"subject_tag"`
+	IMAPMailbox       *string           `yaml:"imap_mailbox"`
+	Reactions         map[string]string `yaml:"reactions"`
+	MarkAs            map[string]string `yaml:"mark_as"`
 	Permissions       map[string][]string `yaml:"permissions"`
 }
 
 type GlobalConfig struct {
-	IMAPServer        string              `yaml:"imap_server"`
-	IMAPUsername      string              `yaml:"imap_username"`
-	IMAPPassword      string              `yaml:"imap_password"`
-	SMTPServer        string              `yaml:"smtp_server"`
-	SMTPUsername      string              `yaml:"smtp_username"`
-	SMTPPassword      string              `yaml:"smtp_password"`
-	SMTPFromAddr      string              `yaml:"smtp_from_addr"`
-	SMTPFromAlias     *string             `yaml:"smtp_from_alias,omitempty"`
-	DBEncryptionKey   string              `yaml:"db_encryption_key"`
-	DisableEncryption bool                `yaml:"disable_encryption"`
-	SubjectTag        string              `yaml:"subject_tag"`
-	IMAPMailbox       string              `yaml:"imap_mailbox"`
-	Reactions         map[string]string   `yaml:"reactions"`
-	MarkAs            map[string]string   `yaml:"mark_as"`
-	GlobalDBFile      string              `yaml:"global_db_file"`
+	IMAPServer        string            `yaml:"imap_server"`
+	IMAPUsername      string            `yaml:"imap_username"`
+	IMAPPassword      string            `yaml:"imap_password"`
+	SMTPServer        string            `yaml:"smtp_server"`
+	SMTPUsername      string            `yaml:"smtp_username"`
+	SMTPPassword      string            `yaml:"smtp_password"`
+	SMTPFromAddr      string            `yaml:"smtp_from_addr"`
+	SMTPFromAlias     *string           `yaml:"smtp_from_alias,omitempty"`
+	DBEncryptionKey   string            `yaml:"db_encryption_key"`
+	DisableEncryption bool              `yaml:"disable_encryption"`
+	SubjectTag        string            `yaml:"subject_tag"`
+	IMAPMailbox       string            `yaml:"imap_mailbox"`
+	Reactions         map[string]string `yaml:"reactions"`
+	MarkAs            map[string]string `yaml:"mark_as"`
+	GlobalDBFile      string            `yaml:"global_db_file"`
 	Permissions       map[string][]string `yaml:"permissions"`
 }
 
 type Config struct {
-	Global GlobalConfig            `yaml:"global"`
-	Repos  map[string]RepoConfig   `yaml:"repos"`
+	Global GlobalConfig          `yaml:"global"`
+	Repos  map[string]RepoConfig `yaml:"repos"`
 }
 
 type ResolvedRepoConfig struct {
@@ -405,12 +405,15 @@ global:
     Open: "open"
     Closed: "closed"
   # Permissions block.
-  # Rules are checked in order: exact email > wildcard domain > global wildcard "*".
-  # If a permissions block is defined, any user not matching a rule is denied.
-  # If this entire permissions block is removed, all users are allowed.
+  # 'all': Grants all permissions, including moderating content from others.
+  # 'moderate': Allows editing and deleting issues/comments from other users.
+  # Users not matching a specific rule receive default 'user' permissions.
+  # This allows creating/editing/deleting/reacting to their own content.
+  # To explicitly deny a user, add their email with an empty list.
   permissions:
     "admin@example.com": ["all"]
-    "user@example.com": ["create-issue", "add-comment", "react", "unreact", "edit", "mark-as"]
+    "moderator@example.com": ["mark-as", "moderate"] # Can mark status and moderate content
+    "user@example.com": ["create-issue", "add-comment", "react", "unreact", "edit", "delete-issue", "delete-comment"]
     "*@trusted-company.com": ["create-issue", "add-comment"]
     "spammer@domain.com": [] # Explicitly deny
     "*": ["react", "unreact"]
@@ -744,15 +747,30 @@ func parseCommandBlocks(body string) (string, []map[string]string, error) {
 }
 
 // hasPermission checks if an author is allowed to execute a specific command.
-// Rules are checked in order of specificity: exact email -> wildcard domain -> global wildcard "*".
-// If the permissions map is defined but no rule matches, access is denied (default-deny).
-// If the permissions map is nil or empty, access is granted (default-allow).
+// If a user is not explicitly defined in the permissions map, they receive a default "user" role.
 func hasPermission(author, command string, perms map[string][]string) bool {
-	if len(perms) == 0 {
-		return true // No rules defined, so allow all.
+	// Default permissions for any user not explicitly defined in the map.
+	// Ownership is checked within the command execution logic itself.
+	defaultUserPermissions := map[string]bool{
+		"create-issue":   true,
+		"add-comment":    true,
+		"edit":           true,
+		"react":          true,
+		"unreact":        true,
+		"delete-issue":   true,
+		"delete-comment": true,
+		"alias":          true,
+		"unalias":        true,
+		"mark-as":        true,
+		"moderate":       false,
 	}
 
+	// Check for an exact email match first.
 	if allowedCmds, ok := perms[author]; ok {
+		// An empty list for a user means they are explicitly denied all actions.
+		if len(allowedCmds) == 0 {
+			return false
+		}
 		if len(allowedCmds) == 1 && allowedCmds[0] == "all" {
 			return true
 		}
@@ -761,13 +779,18 @@ func hasPermission(author, command string, perms map[string][]string) bool {
 				return true
 			}
 		}
-		return false // Rule found, but command not in the allowed list.
+		// A rule was found, but the command is not in the list. Deny.
+		return false
 	}
 
+	// Check for a wildcard domain match.
 	parts := strings.Split(author, "@")
 	if len(parts) == 2 {
 		wildcardDomain := "*@" + parts[1]
 		if allowedCmds, ok := perms[wildcardDomain]; ok {
+			if len(allowedCmds) == 0 {
+				return false
+			}
 			if len(allowedCmds) == 1 && allowedCmds[0] == "all" {
 				return true
 			}
@@ -780,7 +803,11 @@ func hasPermission(author, command string, perms map[string][]string) bool {
 		}
 	}
 
+	// Check for a global wildcard match.
 	if allowedCmds, ok := perms["*"]; ok {
+		if len(allowedCmds) == 0 {
+			return false
+		}
 		if len(allowedCmds) == 1 && allowedCmds[0] == "all" {
 			return true
 		}
@@ -792,8 +819,8 @@ func hasPermission(author, command string, perms map[string][]string) bool {
 		return false
 	}
 
-	// No matching rule was found. Since a permissions block exists, deny access.
-	return false
+	// No specific rule found, fall back to the default user permissions.
+	return defaultUserPermissions[command]
 }
 
 func executeCommand(cmd map[string]string, body, author string, db *RepoDatabase, repoCfg *ResolvedRepoConfig, globalDB *GlobalDatabase) error {
@@ -884,7 +911,7 @@ func executeCommand(cmd map[string]string, body, author string, db *RepoDatabase
 
 		switch itemType {
 		case "issue":
-			if issue.Author != author {
+			if issue.Author != author && !hasPermission(author, "moderate", repoCfg.Permissions) {
 				return fmt.Errorf("permission denied: user %s cannot edit issue by %s", author, issue.Author)
 			}
 			issue.History = append(issue.History, EditRecord{Timestamp: time.Now(), Body: issue.Body})
@@ -909,7 +936,7 @@ func executeCommand(cmd map[string]string, body, author string, db *RepoDatabase
 			if targetComment == nil {
 				return fmt.Errorf("comment with ID %d not found in issue #%d", commentID, issueID)
 			}
-			if targetComment.Author != author {
+			if targetComment.Author != author && !hasPermission(author, "moderate", repoCfg.Permissions) {
 				return fmt.Errorf("permission denied: user %s cannot edit comment by %s", author, targetComment.Author)
 			}
 			targetComment.History = append(targetComment.History, EditRecord{Timestamp: time.Now(), Body: targetComment.Body})
@@ -918,6 +945,69 @@ func executeCommand(cmd map[string]string, body, author string, db *RepoDatabase
 		default:
 			return fmt.Errorf("unknown item type for edit: '%s'", itemType)
 		}
+
+	case "delete-issue":
+		issueIDStr, ok := cmd["issue-id"]
+		if !ok {
+			return errors.New("delete-issue requires 'issue-id'")
+		}
+		issueID, err := strconv.Atoi(issueIDStr)
+		if err != nil {
+			return fmt.Errorf("invalid 'issue-id' for delete-issue: %s", issueIDStr)
+		}
+		issue, ok := db.Issues[issueID]
+		if !ok {
+			return fmt.Errorf("issue with ID %d not found", issueID)
+		}
+		if issue.Author != author && !hasPermission(author, "moderate", repoCfg.Permissions) {
+			return fmt.Errorf("permission denied: user %s cannot delete issue owned by %s", author, issue.Author)
+		}
+		delete(db.Issues, issueID)
+		log.Printf("Deleted issue #%d", issueID)
+
+	case "delete-comment":
+		issueIDStr, ok := cmd["issue-id"]
+		if !ok {
+			return errors.New("delete-comment requires 'issue-id'")
+		}
+		issueID, err := strconv.Atoi(issueIDStr)
+		if err != nil {
+			return fmt.Errorf("invalid 'issue-id' for delete-comment: %s", issueIDStr)
+		}
+		issue, ok := db.Issues[issueID]
+		if !ok {
+			return fmt.Errorf("issue with ID %d not found", issueID)
+		}
+
+		commentIDStr, ok := cmd["comment-id"]
+		if !ok {
+			return errors.New("delete-comment requires 'comment-id'")
+		}
+		commentID, err := strconv.Atoi(commentIDStr)
+		if err != nil {
+			return fmt.Errorf("invalid 'comment-id' for delete-comment: %s", commentIDStr)
+		}
+
+		commentIndex := -1
+		var targetComment Comment
+		for i, c := range issue.Comments {
+			if c.ID == commentID {
+				targetComment = c
+				commentIndex = i
+				break
+			}
+		}
+
+		if commentIndex == -1 {
+			return fmt.Errorf("comment with ID %d not found in issue #%d", commentID, issueID)
+		}
+
+		if targetComment.Author != author && !hasPermission(author, "moderate", repoCfg.Permissions) {
+			return fmt.Errorf("permission denied: user %s cannot delete comment owned by %s", author, targetComment.Author)
+		}
+
+		issue.Comments = append(issue.Comments[:commentIndex], issue.Comments[commentIndex+1:]...)
+		log.Printf("Deleted comment #%d on issue #%d", commentID, issueID)
 
 	case "mark-as":
 		issueIDStr, ok := cmd["issue-id"]
@@ -940,6 +1030,12 @@ func executeCommand(cmd map[string]string, body, author string, db *RepoDatabase
 		if !ok {
 			return fmt.Errorf("issue with ID %d not found", issueID)
 		}
+
+		// A user can mark their own issue. A user with 'moderate' or 'all' permission can mark any issue.
+		if issue.Author != author && !hasPermission(author, "moderate", repoCfg.Permissions) {
+			return fmt.Errorf("permission denied: user %s cannot mark-as an issue owned by %s", author, issue.Author)
+		}
+
 		issue.Status = statusName
 		issue.StatusClass = className
 		if className == "resolved" || className == "not-planned" || className == "closed" {
