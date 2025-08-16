@@ -28,14 +28,6 @@ repos:
     root-relative: "/dbin/"
     theme: "gruvbox-light"
 
-  a-utils:
-    repo: ./repos/a-utils
-    out: ./pub/a-utils
-    revs: ["HEAD"]
-    desc: "+19 Unix utilities re-imagined yet POSIX."
-    clone-url: "https://github.com/xplshn/a-utils.git"
-    root-relative: "/a-utils/"
-
   pgit:
     repo: ..
     out: ./pub/pgit
