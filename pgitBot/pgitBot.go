@@ -127,6 +127,8 @@ type RepoDatabase struct {
 	MarkAs        map[string]string   `json:"mark_as"`
 	IssuesEmail   string              `json:"issuesEmail"`
 	SubjectTag    string              `json:"subjectTag"`
+	AliasToEmail  map[string]string   `json:"aliasToEmail,omitempty"`
+	EmailToAlias  map[string]string   `json:"emailToAlias,omitempty"`
 	mu            sync.Mutex          `json:"-"`
 }
 
@@ -1176,40 +1178,34 @@ func executeCommand(cmd map[string]string, body, author string, db *RepoDatabase
 		log.Printf("Removed reaction '%s' by '%s' from %s", emoji, author, itemName)
 
 	case "alias":
-		if globalDB == nil {
-			return errors.New("alias command requires a global database, but it's not configured")
-		}
 		alias, ok := cmd["alias"]
 		if !ok || alias == "" {
 			return errors.New("alias command requires a non-empty 'alias'")
 		}
 
-		globalDB.mu.Lock()
-		defer globalDB.mu.Unlock()
+		db.mu.Lock()
+		defer db.mu.Unlock()
 
-		if ownerEmail, exists := globalDB.AliasToEmail[alias]; exists && ownerEmail != author {
-			return fmt.Errorf("alias '%s' is already in use", alias)
+		if ownerEmail, exists := db.AliasToEmail[alias]; exists && ownerEmail != author {
+			return fmt.Errorf("alias '%s' is already in use within this repository", alias)
 		}
-		if oldAlias, exists := globalDB.EmailToAlias[author]; exists {
-			delete(globalDB.AliasToEmail, oldAlias)
+		if oldAlias, exists := db.EmailToAlias[author]; exists {
+			delete(db.AliasToEmail, oldAlias)
 		}
-		globalDB.AliasToEmail[alias] = author
-		globalDB.EmailToAlias[author] = alias
-		log.Printf("Set alias for '%s' to '%s'", author, alias)
+		db.AliasToEmail[alias] = author
+		db.EmailToAlias[author] = alias
+		log.Printf("Set repo-specific alias for '%s' to '%s' in repo '%s'", author, alias, repoCfg.Name)
 
 	case "unalias":
-		if globalDB == nil {
-			return errors.New("unalias command requires a global database, but it's not configured")
-		}
-		globalDB.mu.Lock()
-		defer globalDB.mu.Unlock()
+		db.mu.Lock()
+		defer db.mu.Unlock()
 
-		if oldAlias, exists := globalDB.EmailToAlias[author]; exists {
-			delete(globalDB.AliasToEmail, oldAlias)
-			delete(globalDB.EmailToAlias, author)
-			log.Printf("Removed alias '%s' for '%s'", oldAlias, author)
+		if oldAlias, exists := db.EmailToAlias[author]; exists {
+			delete(db.AliasToEmail, oldAlias)
+			delete(db.EmailToAlias, author)
+			log.Printf("Removed repo-specific alias '%s' for '%s' in repo '%s'", oldAlias, author, repoCfg.Name)
 		} else {
-			log.Printf("User '%s' had no alias to remove", author)
+			log.Printf("User '%s' had no repo-specific alias to remove in repo '%s'", author, repoCfg.Name)
 		}
 
 	default:
@@ -1367,6 +1363,12 @@ func loadRepoDatabase(filename string, globalCfg *GlobalConfig) (*RepoDatabase, 
 	}
 	if db.RejectedUIDs == nil {
 		db.RejectedUIDs = make(map[imap.UID]string)
+	}
+	if db.AliasToEmail == nil {
+		db.AliasToEmail = make(map[string]string)
+	}
+	if db.EmailToAlias == nil {
+		db.EmailToAlias = make(map[string]string)
 	}
 	log.Printf("Loaded repo database '%s' with %d issues, %d processed UIDs, and %d rejected UIDs.", filename, len(db.Issues), len(db.ProcessedUIDs), len(db.RejectedUIDs))
 	return db, nil
